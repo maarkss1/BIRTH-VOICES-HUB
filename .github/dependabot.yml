@@ -1,0 +1,37 @@
+version: 2
+
+updates:
+  # Root npm workspace (also covers packages/sip-agent via npm workspaces — Dependabot follows
+  # the workspaces declared in package.json automatically from a single "/" directory entry).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # Patch/minor bumps land together to cut PR noise; majors stay individual so each gets its
+      # own regression pass (see docs/AUDIT.md §3.3 — prisma/openai/ioredis/bullmq/lucide-react
+      # major upgrades explicitly need a dedicated PR with the full suite run before/after).
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore(10)"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(10)"
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(10)"
