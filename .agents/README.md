@@ -28,6 +28,7 @@ polir navegação antes da fundação estar sólida.
 - `prompts/09-sdk-contratos-docs.md`
 - `prompts/10-infraestrutura-observabilidade.md`
 - `prompts/11-supervisao-tempo-real.md`
+- `prompts/12-growth-billing-monetizacao.md` — roadmap pós-release (Fase 6 de `ROADMAP.md`), não faz parte das Ondas 1-4
 - `COMO-CHAMAR-OS-AGENTES.md` — prompts prontos para colar, um por agente, para abrir a sessão correspondente em qualquer ferramenta de agente de código
 
 ## Pastas de execução (criadas em runtime, não versionadas com conteúdo sensível)

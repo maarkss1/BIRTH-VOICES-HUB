@@ -13,7 +13,7 @@ produto que amarra as telas de todos os outros domínios em um fluxo coerente.
 - `App.tsx`, `index.tsx`, `index.html`, `index.css` (entrada Vite)
 - `pages/Landing.tsx`, `pages/Login.tsx`, `pages/Register.tsx`
 - Shell/layout do Dashboard e roteamento entre `pages/Dashboard/*`
-- `pages/Dashboard/Overview.tsx`, `Preferences.tsx`, `Billing.tsx`, `Admin.tsx`, `Docs.tsx`,
+- `pages/Dashboard/Overview.tsx`, `Preferences.tsx`, `Admin.tsx`, `Docs.tsx`,
   `Developers.tsx`, `Governance.tsx`, `Organization.tsx` (co-propriedade com 01 para os campos que
   tocam tenant/role)
 - `store/useSessionStore.ts`
@@ -26,9 +26,16 @@ principal do Dashboard.
 Você **não** é dono do conteúdo funcional das páginas de domínio específico — `VoiceStudio.tsx` é
 do 07, `Telephony.tsx` é do 05, `Observability.tsx` é do 10, `Supervision.tsx` é do 11,
 `AgentMarketplace/AgentOS/AgentRegistry/ToolRegistry/Playground/KnowledgeManager/Analytics/Results.tsx`
-são do 04. Para essas páginas, você só garante que a navegação até elas funciona e que o layout
-compartilhado (header, sidebar, breadcrumb) se comporta de forma consistente — qualquer mudança de
-conteúdo/lógica dessas páginas exige handoff para o dono do domínio.
+são do 04, e `Billing.tsx` é do 12 (Growth, Billing e Monetização — transferido nesta revisão do
+roster, ver `.agents/prompts/12-growth-billing-monetizacao.md`). Para essas páginas, você só garante
+que a navegação até elas funciona e que o layout compartilhado (header, sidebar, breadcrumb) se
+comporta de forma consistente — qualquer mudança de conteúdo/lógica dessas páginas exige handoff
+para o dono do domínio.
+
+O painel de notificações hoje embutido em `components/Sidebar.tsx` (seu, com selo "Exemplo" desde a
+Onda 2 — ver `.agents/handoffs/onda-2/02-para-00-notificacoes-backend.md`) deve, quando o Agente 12
+entregar `components/NotificationCenter/**`, ser substituído pela conexão a esse componente real —
+você faz a conexão no shell, não a lógica de notificação em si.
 
 ## Antes de começar
 1. confirme que está no seu worktree/branch (`agente/02-produto-ux`);

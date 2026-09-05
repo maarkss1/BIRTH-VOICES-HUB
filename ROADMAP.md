@@ -261,10 +261,13 @@ um novo domínio de repositório (ex.: `src/services/billingService.ts`,
 ser criado.
 
 Isso muda o total do roster de **11 → 12 especialistas** (13 papéis contando o Coordenador). Como
-isso é mudança de governança — novo dono de arquivo, novo prompt em `.agents/prompts/`, atualização
-da seção 11 de `AGENTS.md` — e `AGENTS.md` §4 é explícito que "nenhum agente edita o próprio prompt
-ou o prompt de outro agente durante a execução — mudança de prompt é decisão humana, fora do ciclo
-de ondas", **não crio o Agente 12 nem edito `AGENTS.md` sem confirmação** — ver pergunta ao final.
+essa é uma mudança de governança — novo dono de arquivo, novo prompt em `.agents/prompts/`,
+atualização da seção 4/9/11/16 de `AGENTS.md` — e `AGENTS.md` §4 é explícito que "nenhum agente
+edita o próprio prompt ou o prompt de outro agente durante a execução — mudança de prompt é decisão
+humana, fora do ciclo de ondas", o Agente 12 só foi criado após confirmação explícita do usuário.
+**Status: criado.** Ver `.agents/prompts/12-growth-billing-monetizacao.md`, `AGENTS.md` (§4, §9 item
+16, §11, §16) e o bloco de sessão em `.agents/COMO-CHAMAR-OS-AGENTES.md` → "Onda 5". `Billing.tsx`
+já foi transferido do Agente 02 para o 12 em `.agents/prompts/02-produto-ux.md`.
 
 **Regra de concorrência (3 simultâneos, nunca 4)**: mantenho a recomendação de não alterá-la. Ela
 não é limite de capacidade técnica — é limite de coordenação (o Coordenador revisa `git diff` de
@@ -278,21 +281,18 @@ por vez" para remediação).
 **Plano de ondas sugerido para o roadmap novo** (após Onda 3/Onda 4 fecharem o release atual):
 | Onda | Especialistas (máx. 3 por vez) | Foco |
 |---|---|---|
-| 5 | `04` (motor de execução de grafo), `07` (contrato + versionamento), `12`* (billing/uso, se criado) | Fase 5 (maior gap de produto) |
+| 5 | `04` (motor de execução de grafo), `07` (contrato + versionamento), `12` (billing/uso) | Fase 5 (maior gap de produto) + Fase 6 |
 | 6 | `01` (RLS, upgrades de schema), `10` (multi-região, upgrades de infra), `08` (SAST/DAST/carga) | Fase 8 |
 | 7 | `02` (performance/white-label), `03` (Design System v2/a11y), `04` ou `11` (painel mobile) | Fase 7 e início da 10 |
 | 8 | `01` (SSO/MFA/compliance), `09` (SDKs/CLI), `06` (integrações de CRM adicionais) | Fase 9 e resto da 10 |
 
-\* Onda 5 fica com 2 especialistas confirmados se o Agente 12 não for criado — o billing recuaria
-para handoff cruzado entre `01`/`02`/`04` como já vem acontecendo, mais lento por natureza.
+Esta tabela continua como **proposta**, não como regra vigente — `EXECUCAO-ONDAS.md` só especifica
+formalmente as Ondas 0-4 (ver `AGENTS.md` §5, nota "Ondas 5+"). Antes de disparar a Onda 5 de
+verdade, o Coordenador formaliza lá branch de integração, gate e critérios de "não avançar se
+existir", no mesmo padrão das ondas anteriores.
 
 **Resposta direta**: para fechar o release atual, **zero agentes novos** — são as Ondas 3 e 4 já
-planejadas com os 11 existentes. Para o roadmap ampliado, **11 dos 12 domínios novos já têm dono**,
-faltando **1 especialista novo (Growth/Billing/Monetização)** se você quiser que esse domínio pare
-de orbitar como handoff sem dono. Paralelismo continua o mesmo: **3 agentes especialistas por vez,
-nunca 4**, independentemente de o roster crescer para 12 — o teto é de coordenação, não de tarefa.
-
-**Antes de eu seguir**: quer que eu crie o Agente 12 de verdade — prompt em
-`.agents/prompts/12-growth-billing-monetizacao.md`, atualização da seção 11 (propriedade de
-arquivo) e do roster global em `AGENTS.md`, e o bloco correspondente em `COMO-CHAMAR-OS-AGENTES.md`
-— ou prefere manter o billing como handoff cruzado entre `01`/`02`/`04` por enquanto?
+planejadas com os 11 existentes de sempre. Para o roadmap ampliado, os 12 domínios agora têm dono —
+o Agente 12 (Growth/Billing/Monetização) foi criado para fechar o único gap real de propriedade.
+Paralelismo continua o mesmo: **3 agentes especialistas por vez, nunca 4**, independentemente de o
+roster ter crescido para 12 — o teto é de coordenação, não de tarefa.

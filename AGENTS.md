@@ -35,10 +35,20 @@ Plataforma enterprise multi-tenant para criar, orquestrar e monitorar agentes au
 - 09 — SDK, Contratos e Documentação de API
 - 10 — Infraestrutura, Observabilidade e Deploy
 - 11 — Supervisão em Tempo Real e Telemetria
+- 12 — Growth, Billing e Monetização de Uso
 
 Prompts: `.agents/prompts/`. Nenhum agente edita o próprio prompt ou o prompt de outro agente durante a execução — mudança de prompt é decisão humana, fora do ciclo de ondas.
 
 Este roster foi definido a partir da estrutura real do repositório (ver `.agents/README.md` para o racional de cada corte de domínio), não copiado de outro projeto. Ele prioriza segurança/tenancy, telefonia real e a integração externa já em produção com o AtlasGR antes de UX e acabamento — ver "Onda 1" abaixo.
+
+O Agente 12 foi adicionado depois dos demais (roadmap pós-release, não faz parte do caminho para o
+release atual): dois handoffs sobre billing e notificações ficaram órfãos desde a Onda 2
+(`.agents/handoffs/onda-2/02-para-00-billing-backend.md`, `02-para-00-notificacoes-backend.md`),
+endereçados a "Coordenador/roadmap" porque cruzam dado (01), IA (04) e produto (02) sem caber
+inteiramente em nenhum. Ver `ROADMAP.md` → "Fase 6" e → "Revisão da quantidade de agentes
+necessária" para o racional completo. Ele não participa das Ondas 1-4 (fechamento do release atual)
+— sua primeira missão é a Onda 5, ainda não especificada em `EXECUCAO-ONDAS.md` (ver nota ao final
+da seção 5).
 
 ## 5. Regra de concorrência
 O coordenador ocupa 1 slot. No máximo 3 especialistas podem executar simultaneamente, em qualquer onda.
@@ -68,6 +78,16 @@ Executar em paralelo, depois de `RELEASE APPROVED` na Onda 3 (ou antes, se o Coo
 1. Agente 09 — SDK, Contratos e Documentação de API
 2. Agente 10 — Infraestrutura, Observabilidade e Deploy
 3. Agente 11 — Supervisão em Tempo Real e Telemetria
+
+### Ondas 5+ — Roadmap pós-release (fora do caminho de release atual)
+`EXECUCAO-ONDAS.md` hoje só especifica as Ondas 0-4 (o caminho até `RELEASE APPROVED` do código já
+existente). As ondas seguintes, cobrindo o roadmap ampliado em `ROADMAP.md` (Fases 5-10, incluindo o
+Agente 12), ainda não têm especificação formal de branch/gate/critério de bloqueio ali — a
+distribuição sugerida (ex.: Onda 5 = Agentes 04, 07 e 12 na Fase 5 do roadmap) está em `ROADMAP.md`
+→ "Revisão da quantidade de agentes necessária" como proposta, não como regra vigente. Antes de
+disparar uma Onda 5 de verdade, o Coordenador deve formalizá-la em `EXECUCAO-ONDAS.md` seguindo o
+mesmo padrão das Ondas 1-4 (branch de integração, gate, critérios de "não avançar se existir"). A
+regra de no máximo 3 especialistas simultâneos vale igualmente para qualquer onda futura.
 
 ## 6. Isolamento de execução (git worktree)
 
@@ -145,6 +165,7 @@ Antes de adicionar novas funcionalidades, eliminar ou validar como resolvidos:
 13. Studio permitindo publicar/ativar um workflow que não passou pelo `ValidationEngine`.
 14. Dashboard/telemetria (Observability, LiveSupervisor) exibindo métrica fabricada em vez de dado real vindo de OpenTelemetry/BullMQ/Socket.io.
 15. Dump/backup de banco versionado no git, ou `.env` real commitado.
+16. Cobrança duplicada, saldo/plano incorreto ou dado de pagamento não tokenizado no domínio de billing (Agente 12) — mesma classe de gravidade do item 11 (idempotência), agora aplicada a dinheiro real do cliente em vez de ligação real para o lead.
 
 ## 10. Regra de autonomia
 Não interromper o usuário para decisões técnicas rotineiras.
@@ -173,6 +194,7 @@ Perguntas ao usuário são último recurso e apenas para fatos externos realment
 - `packages/sdk/**`, `docs/api/**`, `docs/adr/**`, `docs/sdk/**`, `docs/examples/**`, `docs/patterns/**`, `docs/cli/**`, `docs/dx/**`, `docs/webhooks/**`, `docs/ai/**`, `docs/security/**`: somente Agente 09.
 - `Dockerfile`, `docker-compose.yml`, `docker-compose.opensource.yml`, `.github/workflows/**`, `infrastructure/**`: somente Agente 10.
 - `components/LiveSupervisor/**`: somente Agente 11.
+- `pages/Dashboard/Billing.tsx`, `src/controllers/billing.controller.ts`, `notification.controller.ts`, `src/services/billingService.ts`, `usageMeteringService.ts`, `notificationService.ts`, `src/routes/billing.routes.ts`, `notification.routes.ts`, `components/NotificationCenter/**`: somente Agente 12 (ver `.agents/prompts/12-growth-billing-monetizacao.md`).
 - `server.ts`: alteração exige aprovação explícita do Agente 00 (bootstrap único: Express, Socket.io, rate limiting, montagem de rotas — várias equipes dependem da ordem de middleware ali).
 - `package.json` e `package-lock.json`: alteração exige aprovação explícita do Agente 00 (workspaces npm compartilhados).
 - `.agents/prompts/**`: nenhum especialista edita; mudança de prompt é decisão humana fora do ciclo de execução.
@@ -236,6 +258,7 @@ Responsabilidade por domínio:
 - **05** garante que gravações de chamada e `CallLog` tenham controle de acesso, retenção definida e caminho de exclusão; garante que o request-signature validation do Twilio realmente barra requisição forjada.
 - **06** garante que a integração AtlasGR/Bland AI não duplique dado pessoal fora do tenant de origem e que uploads processados por antivírus/object storage não vazem entre organizações.
 - **08** garante, na checklist de release, que existe caminho operacional para atender solicitação de titular (acesso, correção, exclusão) e que isso está documentado.
+- **12** garante que dado de pagamento tenha o mesmo nível de controle de acesso que dado de contato, que nenhum número de cartão/PAN seja armazenado em texto claro (tokenização via gateway de pagamento, nunca dado bruto na base própria), e que o sistema de notificações não vaze evento/dado de um tenant para o e-mail/webhook de outro.
 
 Nenhum agente deve tratar este tema como "fora de escopo" — cada um trata a fatia que lhe cabe dentro da própria missão de onda.
 
