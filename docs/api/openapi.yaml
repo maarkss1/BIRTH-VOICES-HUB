@@ -1,8 +1,17 @@
 openapi: 3.1.0
 info:
   title: Birth Voices Hub API
-  description: Enterprise API for managing multi-tenant workflows, AI agents, and voice interactions.
-  version: 1.0.0
+  description: >
+    Enterprise API for managing multi-tenant workflows, AI agents, and voice interactions.
+
+
+    This document is audited directly against `src/routes/**` and the controllers they mount —
+    it is the contract as actually implemented, not an aspirational design. See
+    `.agents/prompts/09-sdk-contratos-docs.md` for the audit process and `docs/AUDIT.md` for the
+    project's living technical-debt record. Endpoints that exist but are not yet functional (e.g.
+    `POST /tts`) are documented as such rather than omitted, so a client integrating against this
+    spec does not have to rediscover the gap at runtime.
+  version: 1.1.0
 servers:
   - url: http://localhost:5001/api
     description: Local Development Server
@@ -15,6 +24,46 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: >
+        Access token issued by `POST /auth/login` or `POST /auth/register`. The browser client
+        instead relies on the httpOnly `access_token`/`refresh_token` cookies set on those same
+        responses — both mechanisms are accepted by `requireTenant`/`attachAuthIfPresent`, but a
+        non-browser SDK client must use the `Authorization: Bearer <token>` header shown here.
+
+  parameters:
+    idPathParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Resource id (Prisma `cuid`/`uuid` depending on the model).
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid session (no valid access token/cookie).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated, but the caller's role does not allow this action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: The resource does not exist for the authenticated tenant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Request body failed schema validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
 
   schemas:
     User:
@@ -28,6 +77,9 @@ components:
           format: email
         companyName:
           type: string
+        role:
+          type: string
+          enum: [admin, user]
         tenantId:
           type: string
           format: uuid
@@ -35,7 +87,7 @@ components:
           type: string
           format: date-time
 
-    Workflow:
+    Organization:
       type: object
       properties:
         id:
@@ -43,15 +95,61 @@ components:
           format: uuid
         name:
           type: string
-        description:
+        createdAt:
           type: string
+          format: date-time
+
+    Workflow:
+      type: object
+      description: >
+        `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the
+        real shape (`StudioNode`/`StudioEdge` per node type) is documented in
+        `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema,
+        because it evolves independently of the HTTP contract.
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        version:
+          type: integer
         status:
           type: string
           enum: [draft, active, archived]
+          description: >
+            Only `POST /workflow/publish` can set this to `active`, and only after
+            `ValidationEngine`/`validateRuntimeCompatibility` both pass server-side. Any
+            subsequent edit demotes it back to `draft`.
         nodes:
           type: array
+          items: {}
         edges:
           type: array
+          items: {}
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WorkflowHistoryEntry:
+      type: object
+      properties:
+        version:
+          type: integer
+        name:
+          type: string
+        commitMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        authorId:
+          type: string
 
     Agent:
       type: object
@@ -65,23 +163,204 @@ components:
           type: string
         configuration:
           type: object
+          description: Free-form agent config (voice/LLM parameters, `knowledge[]` documents, etc).
+
+    KnowledgeDocument:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        keyword:
+          type: string
+        content:
+          type: string
+        addedAt:
+          type: integer
+          format: int64
+
+    RagTestResult:
+      type: object
+      properties:
+        source:
+          type: string
+        confidence:
+          type: number
+        isUpToDate:
+          type: boolean
+        document:
+          type: string
+        version:
+          type: string
+        snippetUsed:
+          type: string
+        embeddingsScore:
+          type: number
+        isLowConfidence:
+          type: boolean
+          description: >
+            Callers must branch on this field, never infer certainty from `confidence` alone
+            (see `AGENTS.md`, Onda 2 mission item 4).
+
+    CallLog:
+      type: object
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        contactName:
+          type: string
+        duration:
+          type: string
+        status:
+          type: string
+          enum: [Concluído, Falhou]
+        agent:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        agentId:
+          type: string
+        channel:
+          type: string
+        status:
+          type: string
+        metadata:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+
+    Metric:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        value:
+          type: number
+        tags:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+
+    AiConsent:
+      type: object
+      description: Tenant-level consent to send data to external AI providers (LGPD, `AGENTS.md` §16).
+      properties:
+        granted:
+          type: boolean
+        grantedAt:
+          type: string
+          format: date-time
+          nullable: true
+        grantedByUserId:
+          type: string
+          nullable: true
 
     ErrorResponse:
       type: object
       properties:
         error:
           type: string
+        code:
+          type: string
+          description: Machine-readable error code, present on some error paths (e.g. `TTS_HTTP_NOT_IMPLEMENTED`, `AI_PROVIDER_CONSENT_REQUIRED`).
         details:
           type: array
           items:
             type: string
+        issues:
+          type: array
+          description: Present on `422` workflow-publish failures — verbatim `ValidationEngine` issues.
+          items:
+            type: object
 
 security:
   - bearerAuth: []
 
+tags:
+  - name: Auth
+  - name: Workflows
+  - name: WorkflowCollaboration
+  - name: CallLogs
+  - name: Onboarding
+  - name: BrandColor
+  - name: VoiceRuntime
+  - name: VoiceOutbound
+  - name: Metrics
+  - name: Sessions
+  - name: Settings
+  - name: Agents
+  - name: Knowledge
+  - name: Organizations
+  - name: Users
+  - name: AI
+  - name: Observability
+  - name: Telephony
+  - name: Webhooks
+  - name: Health
+
 paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new tenant + admin user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, companyName]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 6
+                companyName:
+                  type: string
+                  minLength: 2
+      responses:
+        '200':
+          description: Tenant and admin user created; session cookies set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  refreshToken:
+                    type: string
+                  tenantId:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
   /auth/login:
     post:
+      tags: [Auth]
       summary: User Login
       security: []
       requestBody:
@@ -99,7 +378,7 @@ paths:
                   type: string
       responses:
         '200':
-          description: Successful login
+          description: Successful login; session cookies set.
           content:
             application/json:
               schema:
@@ -107,88 +386,830 @@ paths:
                 properties:
                   token:
                     type: string
+                  refreshToken:
+                    type: string
+                  tenantId:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Introspect the current session
+      responses:
+        '200':
+          description: The authenticated user, resolved from the access cookie or bearer token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
                   user:
                     $ref: '#/components/schemas/User'
         '401':
-          description: Invalid credentials
+          $ref: '#/components/responses/Unauthorized'
 
-  /workflows:
-    get:
-      summary: List Workflows
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Clear the current session cookies
+      security: []
       responses:
         '200':
-          description: A list of workflows for the current tenant
+          description: Logged out.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Workflow'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /auth/refresh:
     post:
-      summary: Create a Workflow
+      tags: [Auth]
+      summary: Rotate the access token using a refresh token
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  description: Refresh token. If omitted, the `refresh_token` cookie is used instead.
+      responses:
+        '200':
+          description: New access token issued; `access_token` cookie updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+        '401':
+          description: No refresh token supplied, or it is invalid/expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflow:
+    get:
+      tags: [Workflows]
+      summary: Get the tenant's workflow
+      description: >
+        There is exactly one `Workflow` row per tenant today (single-flow model, not a
+        collection) — this is `GET /workflow`, not `GET /workflows`.
+      responses:
+        '200':
+          description: The tenant's workflow, or `null` if none has been saved yet.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow:
+                    oneOf:
+                      - $ref: '#/components/schemas/Workflow'
+                      - type: 'null'
+    post:
+      tags: [Workflows]
+      summary: Create/save the tenant's workflow
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [name]
               properties:
                 name:
                   type: string
-                description:
+                nodes:
+                  type: array
+                  items: {}
+                edges:
+                  type: array
+                  items: {}
+                commitMessage:
                   type: string
       responses:
-        '201':
-          description: Workflow created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Workflow'
-
-  /agents:
-    get:
-      summary: List Agents
-      responses:
         '200':
-          description: List of AI agents for the current tenant
+          description: Workflow saved (as a new version).
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Agent'
-    post:
-      summary: Create an Agent
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    put:
+      tags: [Workflows]
+      summary: Update the tenant's workflow
+      description: Editing `nodes`/`edges` demotes `status` back to `draft` if it was `active`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [name, model]
               properties:
                 name:
                   type: string
-                model:
+                nodes:
+                  type: array
+                  items: {}
+                edges:
+                  type: array
+                  items: {}
+      responses:
+        '200':
+          description: Workflow updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Workflows]
+      summary: Delete the tenant's workflow
+      responses:
+        '200':
+          description: Workflow removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflow/history:
+    get:
+      tags: [Workflows]
+      summary: List saved versions of the tenant's workflow
+      responses:
+        '200':
+          description: Version history, most recent first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkflowHistoryEntry'
+
+  /workflow/restore:
+    post:
+      tags: [Workflows]
+      summary: Restore a previous workflow version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version:
+                  type: integer
+      responses:
+        '200':
+          description: Workflow restored to the given version (creates a new current version).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          description: Missing `version`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflow/duplicate:
+    post:
+      tags: [Workflows]
+      summary: Duplicate a workflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceId]
+              properties:
+                sourceId:
                   type: string
-                configuration:
+      responses:
+        '200':
+          description: Duplicate created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflow/publish:
+    post:
+      tags: [Workflows]
+      summary: Publish the tenant's workflow (flip status to `active`)
+      description: >
+        The only route that can set `Workflow.status = 'active'`. Runs `ValidationEngine`
+        (structural graph validity) and `validateRuntimeCompatibility` (does the telephony
+        runtime actually know how to execute every node in this graph) before publishing —
+        see `docs/patterns/workflow-execution-contract.md`. This closes `AGENTS.md` blocker #13.
+      responses:
+        '200':
+          description: Published.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: >
+            The graph is well-formed JSON but fails validation (structural or runtime
+            capability) — `issues` carries the verbatim `ValidationEngine` findings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflow/comments:
+    post:
+      tags: [WorkflowCollaboration]
+      summary: Add a comment to a workflow node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nodeId, text]
+              properties:
+                nodeId:
+                  type: string
+                text:
+                  type: string
+      responses:
+        '200':
+          description: Comment added.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflow/comments/resolve:
+    post:
+      tags: [WorkflowCollaboration]
+      summary: Resolve a workflow comment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commentId]
+              properties:
+                commentId:
+                  type: string
+      responses:
+        '200':
+          description: Comment resolved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflow/lock:
+    post:
+      tags: [WorkflowCollaboration]
+      summary: Lock a workflow node for exclusive editing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nodeId]
+              properties:
+                nodeId:
+                  type: string
+      responses:
+        '200':
+          description: Node locked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Node is already locked by another user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflow/unlock:
+    post:
+      tags: [WorkflowCollaboration]
+      summary: Release a workflow node lock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nodeId]
+              properties:
+                nodeId:
+                  type: string
+      responses:
+        '200':
+          description: Node unlocked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict releasing the lock (e.g. held by another user).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /call-logs:
+    get:
+      tags: [CallLogs]
+      summary: List call logs for the tenant
+      responses:
+        '200':
+          description: Call logs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  callLogs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CallLog'
+    post:
+      tags: [CallLogs]
+      summary: Create a call log entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contactName:
+                  type: string
+                duration:
+                  type: string
+                status:
+                  type: string
+                  enum: [Concluído, Falhou]
+                agent:
+                  type: string
+      responses:
+        '200':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  log:
+                    $ref: '#/components/schemas/CallLog'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /call-logs/{id}:
+    put:
+      tags: [CallLogs]
+      summary: Update a call log entry
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contactName:
+                  type: string
+                duration:
+                  type: string
+                status:
+                  type: string
+                  enum: [Concluído, Falhou]
+                agent:
+                  type: string
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  log:
+                    $ref: '#/components/schemas/CallLog'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [CallLogs]
+      summary: Delete a call log entry
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /onboarding:
+    get:
+      tags: [Onboarding]
+      summary: Get the current user's onboarding checklist
+      responses:
+        '200':
+          description: Checklist state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checklist:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+    post:
+      tags: [Onboarding]
+      summary: Save the onboarding checklist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checklist]
+              properties:
+                checklist:
+                  type: object
+                  additionalProperties:
+                    type: boolean
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  checklist:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    put:
+      tags: [Onboarding]
+      summary: Save the onboarding checklist (alias of POST)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checklist]
+              properties:
+                checklist:
+                  type: object
+                  additionalProperties:
+                    type: boolean
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  checklist:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Onboarding]
+      summary: Reset the onboarding checklist
+      responses:
+        '200':
+          description: Reset.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /brand-color:
+    get:
+      tags: [BrandColor]
+      summary: Get the tenant's brand color
+      description: >
+        Public-ish read: uses `attachAuthIfPresent`, not `requireTenant` — resolves to the
+        caller's tenant color if authenticated, otherwise returns the platform default. Does
+        not require a session.
+      security: []
+      responses:
+        '200':
+          description: Brand color.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  brandColor:
+                    type: string
+    post:
+      tags: [BrandColor]
+      summary: Set the tenant's brand color
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [color]
+              properties:
+                color:
+                  type: string
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  brandColor:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    put:
+      tags: [BrandColor]
+      summary: Set the tenant's brand color (alias of POST)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [color]
+              properties:
+                color:
+                  type: string
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  brandColor:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [BrandColor]
+      summary: Reset the tenant's brand color to the platform default
+      responses:
+        '200':
+          description: Reset to `#2563eb`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  brandColor:
+                    type: string
+                    example: '#2563eb'
+
+  /voice-runtime:
+    get:
+      tags: [VoiceRuntime]
+      summary: Get the tenant's voice runtime configuration
+      responses:
+        '200':
+          description: Config.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  config:
+                    type: object
+    post:
+      tags: [VoiceRuntime]
+      summary: Create the tenant's voice runtime configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config]
+              properties:
+                config:
                   type: object
       responses:
-        '201':
-          description: Agent created
+        '200':
+          description: Created.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  config:
+                    type: object
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    put:
+      tags: [VoiceRuntime]
+      summary: Update the tenant's voice runtime configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config]
+              properties:
+                config:
+                  type: object
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  config:
+                    type: object
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [VoiceRuntime]
+      summary: Reset the tenant's voice runtime configuration to defaults
+      responses:
+        '200':
+          description: Reset.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
 
   /voice/outbound:
     post:
+      tags: [VoiceOutbound]
       summary: Place an Outbound Voice Call
       description: >
         Asks the telephony provider to dial `targetNumber` and hand the answered call to the given
         agent. Returns as soon as the call is queued — the conversation and its result happen
-        afterwards, and the outcome is delivered via the `agent.call.ended` webhook.
+        afterwards, and the outcome is delivered via the `agent.call.ended` webhook (see
+        `docs/webhooks/index.md`).
       requestBody:
         required: true
         content:
@@ -219,7 +1240,8 @@ paths:
                   format: uri
                   description: >
                     Per-call destination for the `agent.call.ended` webhook, overriding the
-                    deployment-wide `WEBHOOK_URL`. Must be HTTPS outside development.
+                    deployment-wide `WEBHOOK_URL`. Must be HTTPS in production and must not point
+                    at a private/reserved/loopback host (SSRF guard) — see `src/validators/index.ts`.
       responses:
         '202':
           description: Call accepted by the telephony provider and queued for dialing.
@@ -239,19 +1261,1341 @@ paths:
                     type: string
                     example: queued
         '400':
-          description: Invalid payload (e.g. `targetNumber` is not E.164).
+          description: Invalid payload (e.g. `targetNumber` is not E.164, or `callbackUrl` fails the SSRF/HTTPS guard).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such agent for the authenticated tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: A call to this number is already in progress for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: The telephony provider rejected the call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Outbound calling is not configured on this deployment.
+          description: Outbound calling is not configured on this deployment (Twilio not configured).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /metrics:
+    get:
+      tags: [Metrics]
+      summary: List metrics for the tenant
+      responses:
+        '200':
+          description: Metrics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metrics:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Metric'
+    post:
+      tags: [Metrics]
+      summary: Record a metric
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                value:
+                  type: number
+                tags:
+                  type: object
+      responses:
+        '200':
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  metric:
+                    $ref: '#/components/schemas/Metric'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    put:
+      tags: [Metrics]
+      summary: Not implemented — consolidated metrics cannot be edited directly
+      responses:
+        '501':
+          description: Always returns 501; this route exists for symmetry with the other CRUD resources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Metrics]
+      summary: Clear metrics for the tenant
+      responses:
+        '200':
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /sessions:
+    get:
+      tags: [Sessions]
+      summary: List sessions for the tenant
+      responses:
+        '200':
+          description: Sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+    post:
+      tags: [Sessions]
+      summary: Create a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                channel:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        '200':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  session:
+                    $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /sessions/{id}:
+    put:
+      tags: [Sessions]
+      summary: Update a session
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  session:
+                    $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Sessions]
+      summary: End and remove a session
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /settings:
+    get:
+      tags: [Settings]
+      summary: Get the current user's settings
+      responses:
+        '200':
+          description: Settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    type: object
+    post:
+      tags: [Settings]
+      summary: Create the current user's settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+      responses:
+        '200':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  settings:
+                    type: object
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    put:
+      tags: [Settings]
+      summary: Update the current user's settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  settings:
+                    type: object
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Settings]
+      summary: Reset the current user's settings
+      responses:
+        '200':
+          description: Reset.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /agents:
+    get:
+      tags: [Agents]
+      summary: List Agents
+      responses:
+        '200':
+          description: List of AI agents for the current tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+    post:
+      tags: [Agents]
+      summary: Create an Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, model]
+              properties:
+                name:
+                  type: string
+                model:
+                  type: string
+                configuration:
+                  type: object
+      responses:
+        '200':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /agents/{id}:
+    get:
+      tags: [Agents]
+      summary: Get an agent by id
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Agents]
+      summary: Delete an agent
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  /agents/{id}/config:
+    put:
+      tags: [Agents]
+      summary: Update an agent's configuration
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Partial `AgentConfiguration` patch, merged server-side.
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /agents/{id}/knowledge:
+    post:
+      tags: [Knowledge]
+      summary: Add a document to an agent's knowledge base
+      description: >
+        Appends to `AgentConfiguration.knowledge[]`. There is no vector database behind this
+        today — matching is a keyword-based simulation, see `POST /agents/{id}/rag/test` and
+        `docs/ai/index.md`.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId, name, keyword, content]
+              properties:
+                agentId:
+                  type: string
+                name:
+                  type: string
+                keyword:
+                  type: string
+                content:
+                  type: string
+      responses:
+        '200':
+          description: Document added.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{id}/rag/test:
+    post:
+      tags: [Knowledge]
+      summary: Test a RAG query against an agent's knowledge base
+      description: >
+        In-memory keyword simulation (`KnowledgeConfidenceEngine`), not a real vector search —
+        see `docs/ai/index.md` for the current state of RAG on this platform.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId, query]
+              properties:
+                agentId:
+                  type: string
+                query:
+                  type: string
+      responses:
+        '200':
+          description: Result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  result:
+                    $ref: '#/components/schemas/RagTestResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /organizations:
+    get:
+      tags: [Organizations]
+      summary: List organizations visible to the caller
+      description: >
+        Returns a single-element array with the caller's own tenant — there is no
+        cross-tenant organization listing today.
+      responses:
+        '200':
+          description: Organizations.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Organization'
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List users in the tenant
+      description: Requires the `admin` role.
+      responses:
+        '200':
+          description: Users.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Users]
+      summary: Create a user in the tenant
+      description: Requires the `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 6
+                companyName:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, user]
+      responses:
+        '200':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /users/{id}:
+    put:
+      tags: [Users]
+      summary: Update a user's profile
+      description: Self-service on the caller's own account, or admin-on-behalf-of within the same tenant.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                companyName:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, user]
+                password:
+                  type: string
+                  minLength: 6
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Users]
+      summary: Delete a user
+      description: Requires the `admin` role.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/anonymize:
+    post:
+      tags: [Users]
+      summary: LGPD data-subject erasure request
+      description: >
+        Irreversibly scrubs the account's personal data (email, company name, credential)
+        instead of hiding the row — implements Art. 18, VI, Lei 13.709/2018. Self-service on the
+        caller's own account, or admin-on-behalf-of within the same tenant; enforced inside the
+        service layer, not just at the route.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Anonymized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /chat:
+    post:
+      tags: [AI]
+      summary: Send a message to the AI Gateway (Playground)
+      description: >
+        Routed through `LLMGateway.processRequest`, which performs the tenant-scoped AI-provider
+        consent check and provider failover chain (preferred provider → Gemini as guaranteed
+        fallback) — the same gateway every other AI-Gateway caller uses.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentMessages]
+              properties:
+                prompt:
+                  type: string
+                  description: Optional system prompt override.
+                currentMessages:
+                  type: array
+                  items:
+                    type: object
+                    required: [role, text]
+                    properties:
+                      role:
+                        type: string
+                        enum: [user, agent]
+                      text:
+                        type: string
+      responses:
+        '200':
+          description: >
+            Gateway response. `providerUsed: "NONE"` covers two distinct cases distinguishable by
+            `blockedByConsent`: tenant AI-provider consent not granted (`blockedByConsent: true`,
+            no provider was ever called), or every provider in the failover chain failed
+            (`blockedByConsent` absent/false).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+                  providerUsed:
+                    type: string
+                    enum: [GoogleGemini, OpenAI, Claude, 'NONE']
+                  latencyMs:
+                    type: number
+                  tokensUsed:
+                    type: number
+                  costUSD:
+                    type: number
+                  fromFallback:
+                    type: boolean
+                  blockedByConsent:
+                    type: boolean
+                    description: Present (`true`) only when tenant AI-provider consent has not been granted.
+        '400':
+          description: No user message found in `currentMessages`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tts:
+    post:
+      tags: [AI]
+      summary: HTTP text-to-speech (not implemented)
+      description: >
+        Deliberately fails closed with `501` — previously this endpoint returned an empty audio
+        payload with `200`, which made callers believe synthesis had succeeded. Phone-call speech
+        synthesis goes through the voice runtime (`lib/voice-runtime/**`), not this HTTP endpoint.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '501':
+          description: 'Always returned. `code`: `TTS_HTTP_NOT_IMPLEMENTED`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate-music:
+    post:
+      tags: [AI]
+      summary: Generate music via Gemini (Lyria)
+      description: >
+        Calls `GoogleGenAI` directly (not via `LLMGateway`) — requires `GEMINI_API_KEY` to be
+        configured, and requires tenant AI-provider consent (see `POST /ai/consent`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+      responses:
+        '200':
+          description: Generated audio.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audioBase64:
+                    type: string
+                  mimeType:
+                    type: string
+        '403':
+          description: AI-provider consent not granted for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Gemini API key not configured, or provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate-video:
+    post:
+      tags: [AI]
+      summary: Start a video generation job via Gemini (Veo)
+      description: Calls `GoogleGenAI` directly. Requires tenant AI-provider consent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                imageBytes:
+                  type: string
+                  description: Base64-encoded seed image, optional.
+                mimeType:
+                  type: string
+      responses:
+        '200':
+          description: Job started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operationName:
+                    type: string
+        '403':
+          description: AI-provider consent not granted for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Gemini API key not configured, or provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /video-status:
+    post:
+      tags: [AI]
+      summary: Poll a video generation job's status
+      description: Calls `GoogleGenAI` directly. Requires tenant AI-provider consent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationName]
+              properties:
+                operationName:
+                  type: string
+      responses:
+        '200':
+          description: Status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  done:
+                    type: boolean
+                  error:
+                    type: object
+                    nullable: true
+        '403':
+          description: AI-provider consent not granted for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Gemini API key not configured, or provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /video-download:
+    get:
+      tags: [AI]
+      summary: Download a finished generated video
+      description: Calls `GoogleGenAI` directly. Requires tenant AI-provider consent. Streams `video/mp4`.
+      parameters:
+        - name: operationName
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Video stream.
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Missing `operationName`.
+        '403':
+          description: AI-provider consent not granted for this tenant.
+        '404':
+          description: Video not found or not finished yet.
+        '500':
+          description: Gemini API key not configured, or provider error.
+
+  /ai/refactor:
+    post:
+      tags: [AI]
+      summary: AI-refactor a set of workflow nodes
+      description: >
+        Calls `GoogleGenAI` directly with a fixed prompt per `mode`. Requires tenant AI-provider
+        consent. Returns the same `nodes` shape it received, with `data.label`/`data.config`
+        rewritten by the model — this is a Studio editing aid, not a validated write to
+        `Workflow.nodes` (the client must still call `PUT /workflow` to persist it).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode, nodes]
+              properties:
+                mode:
+                  type: string
+                  enum: [simplify, reduceCost, reduceLatency, moreHuman]
+                nodes:
+                  type: array
+                  items: {}
+      responses:
+        '200':
+          description: Refactored nodes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items: {}
+        '403':
+          description: AI-provider consent not granted for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Gemini API key not configured, or provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /ai/generate-workflow:
+    post:
+      tags: [AI]
+      summary: Generate a full workflow graph from a natural-language prompt
+      description: >
+        Calls `GoogleGenAI` directly with a fixed system prompt describing all 12 Studio node
+        types. Requires tenant AI-provider consent. The returned graph is a Studio editing aid —
+        it is not validated against `ValidationEngine`/runtime capability until the client saves
+        and publishes it (`POST /workflow`, `POST /workflow/publish`); several of the documented
+        node types are rejected at publish time today, see
+        `docs/patterns/workflow-execution-contract.md`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+      responses:
+        '200':
+          description: Generated graph.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items: {}
+                  edges:
+                    type: array
+                    items: {}
+        '403':
+          description: AI-provider consent not granted for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Gemini API key not configured, or provider error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /ai/consent:
+    get:
+      tags: [AI]
+      summary: Get the tenant's AI-provider consent status
+      responses:
+        '200':
+          description: Consent status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consent:
+                    $ref: '#/components/schemas/AiConsent'
+    post:
+      tags: [AI]
+      summary: Grant or revoke the tenant's AI-provider consent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granted]
+              properties:
+                granted:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  consent:
+                    $ref: '#/components/schemas/AiConsent'
+        '400':
+          description: '`granted` is not a boolean.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /observability/metrics:
+    get:
+      tags: [Observability]
+      summary: Get OpenTelemetry spans/metrics collected for the tenant
+      description: >
+        Always filtered by the authenticated caller's own `tenantId` inside the collector —
+        `requireTenant` alone only proves the caller is authenticated for *some* tenant, not
+        that they own the data returned.
+      responses:
+        '200':
+          description: Spans and metrics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spans:
+                    type: array
+                    items:
+                      type: object
+                  metrics:
+                    type: array
+                    items:
+                      type: object
+
+  /telephony/twilio/voice:
+    post:
+      tags: [Telephony]
+      summary: Twilio inbound call webhook
+      description: >
+        Twilio-signed webhook (`X-Twilio-Signature`, validated against `PUBLIC_BASE_URL` +
+        `TWILIO_AUTH_TOKEN`), not a session-authenticated route — not for direct SDK use. Body is
+        `application/x-www-form-urlencoded`, Twilio's standard call-status payload.
+      security: []
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: TwiML response (starts a `<Gather>` for speech input, or hangs up if the number is unconfigured).
+          content:
+            text/xml:
+              schema:
+                type: string
+        '403':
+          description: Missing or invalid Twilio signature.
+        '503':
+          description: '`TWILIO_AUTH_TOKEN`/`PUBLIC_BASE_URL` not configured on this deployment.'
+
+  /telephony/twilio/outbound:
+    post:
+      tags: [Telephony]
+      summary: Twilio TwiML webhook for a call placed via `POST /voice/outbound`
+      description: >
+        Twilio-signed webhook. The session id travels in the query string
+        (`?sessionId=...`), set when the call was queued.
+      security: []
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: TwiML response.
+          content:
+            text/xml:
+              schema:
+                type: string
+        '403':
+          description: Missing or invalid Twilio signature.
+        '503':
+          description: '`TWILIO_AUTH_TOKEN`/`PUBLIC_BASE_URL` not configured on this deployment.'
+
+  /telephony/twilio/gather:
+    post:
+      tags: [Telephony]
+      summary: Twilio speech-gather webhook (one per conversation turn)
+      description: Twilio-signed webhook.
+      security: []
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: TwiML response — continues the conversation, or hangs up on `end` node.
+          content:
+            text/xml:
+              schema:
+                type: string
+        '403':
+          description: Missing or invalid Twilio signature.
+        '503':
+          description: '`TWILIO_AUTH_TOKEN`/`PUBLIC_BASE_URL` not configured on this deployment.'
+
+  /telephony/twilio/status:
+    post:
+      tags: [Telephony]
+      summary: Twilio call-status callback (call ended)
+      description: >
+        Twilio-signed webhook. Finalizes the call record and triggers the `agent.call.ended`
+        webhook (see `docs/webhooks/index.md`).
+      security: []
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Acknowledged (always 200, even if internal finalization failed — errors are logged, not surfaced to Twilio).
+        '403':
+          description: Missing or invalid Twilio signature.
+        '503':
+          description: '`TWILIO_AUTH_TOKEN`/`PUBLIC_BASE_URL` not configured on this deployment.'
+
+  /webhook/atlasgr/outbound:
+    post:
+      tags: [Webhooks]
+      summary: AtlasGR CRM → trigger an outbound prospecting call
+      description: >
+        Server-to-server webhook, authenticated by a pre-shared secret
+        (`X-AtlasGR-Webhook-Secret` header, compared against `ATLASGR_WEBHOOK_SECRET`) rather than
+        a user session — mounted before CSRF protection. Idempotent per the underlying call
+        request (`AGENTS.md` blocker #11).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >
+                `.strict()` — an unknown field is rejected, not ignored. Source of truth:
+                `src/features/prospecting/validators/atlasgr.schema.ts`
+                (`atlasGROutboundPayloadSchema`), owned by Agent 06.
+              required: [phone_number, name, company]
+              properties:
+                phone_number:
+                  type: string
+                  minLength: 8
+                  maxLength: 20
+                  example: '+5511999998888'
+                name:
+                  type: string
+                  maxLength: 200
+                company:
+                  type: string
+                  maxLength: 200
+                lead_id:
+                  type: string
+                  maxLength: 200
+                  description: >
+                    Optional and additive — this route's original contract (owned by the sibling
+                    AtlasGR repository) did not have this field; it stays optional so a client on
+                    the old contract keeps working.
+                from:
+                  type: string
+                  minLength: 8
+                  maxLength: 20
+      responses:
+        '200':
+          description: Call triggered.
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing/invalid shared secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: External AI-provider consent not granted for the configured tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Failed to trigger the call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Integration not configured, or idempotency store unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhooks/bland/{token}:
+    post:
+      tags: [Webhooks]
+      summary: Bland AI → call-result callback
+      description: >
+        Server-to-server webhook. `{token}` is compared against `BLAND_WEBHOOK_TOKEN` (Bland AI's
+        outbound-call API takes a plain callback URL with no custom-header support, so the shared
+        secret travels in the path instead of a header). Idempotent per `call_id`
+        (`AGENTS.md` blocker #11); forwards the result to AtlasGR
+        (`ATLASGR_BASE_URL`/api/webhooks/voice-result`) once processed.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >
+                Bland AI's real callback body has many more fields; `.passthrough()` keeps
+                anything not listed here without rejecting it. Source of truth:
+                `src/features/prospecting/validators/atlasgr.schema.ts`
+                (`blandCallResultSchema`), owned by Agent 06.
+              required: [call_id]
+              properties:
+                call_id:
+                  type: string
+                status:
+                  type: string
+                to:
+                  type: string
+                concatenated_transcript:
+                  type: string
+                summary:
+                  type: string
+                recording_url:
+                  type: string
+                call_length:
+                  type: number
+                completed:
+                  type: boolean
+                variables:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Received (and forwarded, or recognized as a duplicate).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+                  duplicate:
+                    type: boolean
+        '400':
+          description: Invalid payload.
+        '403':
+          description: Invalid token.
+        '502':
+          description: Failed to forward the result to AtlasGR.
+        '503':
+          description: Integration not configured (missing `ATLASGR_BASE_URL`/`ATLASGR_WEBHOOK_SECRET`), or idempotency store unavailable, or a callback for the same `call_id` is already in flight.
 
   /health:
     get:
-      summary: Health Check
+      tags: [Health]
+      summary: Liveness/health check
+      description: Also mounted without the `/api` prefix at the server root.
       security: []
       responses:
         '200':
@@ -264,30 +2608,65 @@ paths:
                   status:
                     type: string
                     example: ok
-                  redis:
-                    type: string
-                    example: connected
 
-  /telephony/inbound:
-    post:
-      summary: Twilio Inbound Webhook
-      security: []
-      requestBody:
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: TwiML response
-
-  /metrics:
+  /live:
     get:
-      summary: Get system metrics
+      tags: [Health]
+      summary: Kubernetes/Cloud Run liveness probe
+      security: []
       responses:
         '200':
-          description: Returns platform metrics (calls, tokens, etc)
+          description: OK
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe (checks Postgres and Redis connectivity)
+      security: []
+      responses:
+        '200':
+          description: Ready — database and Redis both reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  checks:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        enum: [ok, error]
+                      redis:
+                        type: string
+                        enum: [ok, error]
+        '503':
+          description: Not ready — database or Redis unreachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  checks:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        enum: [ok, error]
+                      redis:
+                        type: string
+                        enum: [ok, error]

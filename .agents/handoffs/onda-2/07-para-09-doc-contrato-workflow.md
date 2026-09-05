@@ -1,7 +1,7 @@
 - De: Agente 07 (Studio, Workflows e Colaboração)
 - Para: Agente 09 (SDK, Contratos e Documentação de API)
 - Onda: 2
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -35,3 +35,14 @@ N/A (documentação).
 ## Contexto adicional
 Ver `.agents/handoffs/onda-2/07-para-04-contrato-execucao-workflow.md` para o conteúdo completo do
 contrato proposto nesta onda.
+
+## Resolução — Onda 4 (Agente 09)
+
+Formalizado em `docs/patterns/workflow-execution-contract.md`, linkado a partir de
+`docs/patterns/index.md`. O documento segue a **resolução efetivamente implementada** (PR #33,
+branch `codex/production-ready-20260814`, ver seção "Resolução — 2026-08-14" no handoff
+`07-para-04-contrato-execucao-workflow.md`), não a proposta green-field original — onde as duas
+divergem, o documento segue o código real (`findActiveWorkflowForTenant`,
+`workflowRuntimeService.ts`, o gate duplo de `publishWorkflow` com `ValidationEngine` +
+`validateRuntimeCompatibility`, e os tipos de nó efetivamente bloqueados na publicação:
+`voice`, `knowledge`, `tool`, `human_handoff`).
