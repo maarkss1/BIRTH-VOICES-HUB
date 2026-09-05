@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Prisma } from '@prisma/client';
 
 vi.mock('../src/repositories/agentRepository.js', () => ({
   getAgent: vi.fn(),
 }));
 
+// initiateOutboundCall no longer calls `findActiveOutboundSessionToNumber` + `createPhoneSession`
+// as two separate round-trips (see src/services/outboundCallService.ts) — the double-submit guard
+// and the session creation are now one Serializable DB transaction exposed as
+// `createOutboundPhoneSessionIfNoneInFlight`. Only mock what the service actually calls.
 vi.mock('../src/repositories/sessionRepository.js', () => ({
-  createPhoneSession: vi.fn(),
-  updateSession: vi.fn(),
-  findActiveOutboundSessionToNumber: vi.fn(),
   createOutboundPhoneSessionIfNoneInFlight: vi.fn(),
+  updateSession: vi.fn(),
 }));
 
 vi.mock('../src/services/telephonyProvider.js', async () => {
@@ -20,10 +23,8 @@ vi.mock('../src/services/telephonyProvider.js', async () => {
 
 import { getAgent } from '../src/repositories/agentRepository.js';
 import {
-  createPhoneSession,
-  updateSession,
-  findActiveOutboundSessionToNumber,
   createOutboundPhoneSessionIfNoneInFlight,
+  updateSession,
 } from '../src/repositories/sessionRepository.js';
 import { getTelephonyProvider } from '../src/services/telephonyProvider.js';
 import { TwilioNotConfiguredError } from '../src/services/twilioClient.js';
@@ -34,9 +35,7 @@ import {
 } from '../src/services/outboundCallService.js';
 
 const mockGetAgent = vi.mocked(getAgent);
-const mockCreatePhoneSession = vi.mocked(createPhoneSession);
 const mockUpdateSession = vi.mocked(updateSession);
-const mockFindActiveOutbound = vi.mocked(findActiveOutboundSessionToNumber);
 const mockCreateOutboundPhoneSession = vi.mocked(createOutboundPhoneSessionIfNoneInFlight);
 const mockGetTelephonyProvider = vi.mocked(getTelephonyProvider);
 
@@ -44,7 +43,7 @@ const mockPlaceCall = vi.fn();
 const mockAssertConfigured = vi.fn();
 
 type Agent = Awaited<ReturnType<typeof getAgent>>;
-type Session = Awaited<ReturnType<typeof createPhoneSession>>;
+type Session = NonNullable<Awaited<ReturnType<typeof createOutboundPhoneSessionIfNoneInFlight>>['session']>;
 
 function agent(overrides: Partial<NonNullable<Agent>> = {}): NonNullable<Agent> {
   return {
@@ -96,8 +95,6 @@ beforeEach(() => {
     placeCall: mockPlaceCall,
   });
   mockGetAgent.mockResolvedValue(agent());
-  mockFindActiveOutbound.mockResolvedValue(null);
-  mockCreatePhoneSession.mockResolvedValue(session());
   mockCreateOutboundPhoneSession.mockResolvedValue({ session: session(), inFlight: false });
   mockPlaceCall.mockResolvedValue({ callId: 'CA999', status: 'queued', from: '+5511333333333' });
 });
@@ -115,6 +112,29 @@ describe('outboundCallService.initiateOutboundCall', () => {
     mockCreateOutboundPhoneSession.mockResolvedValue({ session: null, inFlight: true });
 
     await expect(initiateOutboundCall(request())).rejects.toBeInstanceOf(DuplicateCallError);
+    expect(mockPlaceCall).not.toHaveBeenCalled();
+  });
+
+  // The double-submit guard lives in a Serializable DB transaction: two concurrent requests for
+  // the same tenant+number can never both observe "free" — Postgres aborts the losing transaction
+  // with a serialization failure (Prisma P2034) instead of letting it write a second session. The
+  // service must treat that failure exactly like `inFlight: true`, not surface it as a raw 500.
+  it('treats a lost concurrent-transaction race (Prisma P2034) as a duplicate call, not a 500', async () => {
+    mockCreateOutboundPhoneSession.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Transaction failed due to a write conflict or a deadlock.', {
+        code: 'P2034',
+        clientVersion: '5.22.0',
+      }),
+    );
+
+    await expect(initiateOutboundCall(request())).rejects.toBeInstanceOf(DuplicateCallError);
+    expect(mockPlaceCall).not.toHaveBeenCalled();
+  });
+
+  it('propagates an unrelated database error instead of masking it as a duplicate call', async () => {
+    mockCreateOutboundPhoneSession.mockRejectedValue(new Error('connection terminated unexpectedly'));
+
+    await expect(initiateOutboundCall(request())).rejects.toThrow('connection terminated unexpectedly');
     expect(mockPlaceCall).not.toHaveBeenCalled();
   });
 
