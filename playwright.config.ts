@@ -29,7 +29,18 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        // Opt-in only: some sandboxes cache an older Chromium revision than the one this
+        // Playwright version expects for its headless-shell fast path, and cannot reach
+        // playwright.dev to download a matching one (network egress policy). Pointing at a
+        // pre-cached full-Chromium binary via this env var sidesteps that specific mismatch
+        // without touching normal CI/local behavior, which never sets it and keeps using
+        // Playwright's own managed browser download.
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+          ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } }
+          : {}),
+      },
     },
   ],
 });
