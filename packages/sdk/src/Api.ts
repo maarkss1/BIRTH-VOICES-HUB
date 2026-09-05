@@ -16,20 +16,45 @@ export interface User {
   /** @format email */
   email?: string;
   companyName?: string;
+  role?: "admin" | "user";
   /** @format uuid */
   tenantId?: string;
   /** @format date-time */
   createdAt?: string;
 }
 
-export interface Workflow {
+export interface Organization {
   /** @format uuid */
   id?: string;
   name?: string;
-  description?: string;
+  /** @format date-time */
+  createdAt?: string;
+}
+
+/** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+export interface Workflow {
+  id?: string;
+  /** @format uuid */
+  tenantId?: string;
+  name?: string;
+  version?: number;
+  /** Only `POST /workflow/publish` can set this to `active`, and only after `ValidationEngine`/`validateRuntimeCompatibility` both pass server-side. Any subsequent edit demotes it back to `draft`. */
   status?: "draft" | "active" | "archived";
   nodes?: any[];
   edges?: any[];
+  /** @format date-time */
+  createdAt?: string;
+  /** @format date-time */
+  updatedAt?: string;
+}
+
+export interface WorkflowHistoryEntry {
+  version?: number;
+  name?: string;
+  commitMessage?: string;
+  /** @format date-time */
+  createdAt?: string;
+  authorId?: string;
 }
 
 export interface Agent {
@@ -37,12 +62,79 @@ export interface Agent {
   id?: string;
   name?: string;
   model?: string;
+  /** Free-form agent config (voice/LLM parameters, `knowledge[]` documents, etc). */
   configuration?: object;
+}
+
+export interface KnowledgeDocument {
+  id?: string;
+  name?: string;
+  keyword?: string;
+  content?: string;
+  /** @format int64 */
+  addedAt?: number;
+}
+
+export interface RagTestResult {
+  source?: string;
+  confidence?: number;
+  isUpToDate?: boolean;
+  document?: string;
+  version?: string;
+  snippetUsed?: string;
+  embeddingsScore?: number;
+  /** Callers must branch on this field, never infer certainty from `confidence` alone (see `AGENTS.md`, Onda 2 mission item 4). */
+  isLowConfidence?: boolean;
+}
+
+export interface CallLog {
+  id?: string;
+  /** @format uuid */
+  tenantId?: string;
+  contactName?: string;
+  duration?: string;
+  status?: "Concluído" | "Falhou";
+  agent?: string;
+  /** @format date-time */
+  createdAt?: string;
+}
+
+export interface Session {
+  id?: string;
+  /** @format uuid */
+  tenantId?: string;
+  agentId?: string;
+  channel?: string;
+  status?: string;
+  metadata?: object;
+  /** @format date-time */
+  createdAt?: string;
+}
+
+export interface Metric {
+  id?: string;
+  name?: string;
+  value?: number;
+  tags?: object;
+  /** @format date-time */
+  createdAt?: string;
+}
+
+/** Tenant-level consent to send data to external AI providers (LGPD, `AGENTS.md` §16). */
+export interface AiConsent {
+  granted?: boolean;
+  /** @format date-time */
+  grantedAt?: string | null;
+  grantedByUserId?: string | null;
 }
 
 export interface ErrorResponse {
   error?: string;
+  /** Machine-readable error code, present on some error paths (e.g. `TTS_HTTP_NOT_IMPLEMENTED`, `AI_PROVIDER_CONSENT_REQUIRED`). */
+  code?: string;
   details?: string[];
+  /** Present on `422` workflow-publish failures — verbatim `ValidationEngine` issues. */
+  issues?: object[];
 }
 
 export type QueryParamsType = Record<string | number, any>;
@@ -302,143 +394,57 @@ export class HttpClient<SecurityDataType = unknown> {
 
 /**
  * @title Birth Voices Hub API
- * @version 1.0.0
+ * @version 1.1.0
  * @baseUrl http://localhost:5001/api
  *
  * Enterprise API for managing multi-tenant workflows, AI agents, and voice interactions.
+ *
+ * This document is audited directly against `src/routes/**` and the controllers they mount — it is the contract as actually implemented, not an aspirational design. See `.agents/prompts/09-sdk-contratos-docs.md` for the audit process and `docs/AUDIT.md` for the project's living technical-debt record. Endpoints that exist but are not yet functional (e.g. `POST /tts`) are documented as such rather than omitted, so a client integrating against this spec does not have to rediscover the gap at runtime.
  */
 export class Api<
   SecurityDataType extends unknown,
 > extends HttpClient<SecurityDataType> {
-  /**
-   * No description
-   *
-   * @name WorkflowsList
-   * @summary List Workflows
-   * @request GET:/workflows
-   * @secure
-   */
-  workflowsList = (params: RequestParams = {}) =>
-    this.request<Workflow[], any>({
-      path: `/workflows`,
-      method: "GET",
-      secure: true,
-      format: "json",
-      ...params,
-    });
-
-  /**
-   * No description
-   *
-   * @name WorkflowsCreate
-   * @summary Create a Workflow
-   * @request POST:/workflows
-   * @secure
-   */
-  workflowsCreate = (
-    data: {
-      name: string;
-      description?: string;
-    },
-    params: RequestParams = {},
-  ) =>
-    this.request<Workflow, any>({
-      path: `/workflows`,
-      method: "POST",
-      body: data,
-      secure: true,
-      type: ContentType.Json,
-      format: "json",
-      ...params,
-    });
-
-  /**
-   * No description
-   *
-   * @name AgentsList
-   * @summary List Agents
-   * @request GET:/agents
-   * @secure
-   */
-  agentsList = (params: RequestParams = {}) =>
-    this.request<Agent[], any>({
-      path: `/agents`,
-      method: "GET",
-      secure: true,
-      format: "json",
-      ...params,
-    });
-
-  /**
-   * No description
-   *
-   * @name AgentsCreate
-   * @summary Create an Agent
-   * @request POST:/agents
-   * @secure
-   */
-  agentsCreate = (
-    data: {
-      name: string;
-      model: string;
-      configuration?: object;
-    },
-    params: RequestParams = {},
-  ) =>
-    this.request<Agent, any>({
-      path: `/agents`,
-      method: "POST",
-      body: data,
-      secure: true,
-      type: ContentType.Json,
-      format: "json",
-      ...params,
-    });
-
-  /**
-   * No description
-   *
-   * @name HealthList
-   * @summary Health Check
-   * @request GET:/health
-   */
-  healthList = (params: RequestParams = {}) =>
-    this.request<
-      {
-        /** @example "ok" */
-        status?: string;
-        /** @example "connected" */
-        redis?: string;
-      },
-      any
-    >({
-      path: `/health`,
-      method: "GET",
-      format: "json",
-      ...params,
-    });
-
-  /**
-   * No description
-   *
-   * @name MetricsList
-   * @summary Get system metrics
-   * @request GET:/metrics
-   * @secure
-   */
-  metricsList = (params: RequestParams = {}) =>
-    this.request<object, any>({
-      path: `/metrics`,
-      method: "GET",
-      secure: true,
-      format: "json",
-      ...params,
-    });
-
-  login = {
+  auth = {
     /**
      * No description
      *
+     * @tags Auth
+     * @name RegisterCreate
+     * @summary Register a new tenant + admin user
+     * @request POST:/auth/register
+     */
+    registerCreate: (
+      data: {
+        /** @format email */
+        email: string;
+        /** @minLength 6 */
+        password: string;
+        /** @minLength 2 */
+        companyName: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          token?: string;
+          refreshToken?: string;
+          tenantId?: string;
+          user?: User;
+        },
+        ErrorResponse
+      >({
+        path: `/auth/register`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Auth
      * @name LoginCreate
      * @summary User Login
      * @request POST:/auth/login
@@ -454,9 +460,11 @@ export class Api<
       this.request<
         {
           token?: string;
+          refreshToken?: string;
+          tenantId?: string;
           user?: User;
         },
-        void
+        ErrorResponse
       >({
         path: `/auth/login`,
         method: "POST",
@@ -465,48 +473,2187 @@ export class Api<
         format: "json",
         ...params,
       }),
-  };
-  initiate = {
+
     /**
      * No description
      *
-     * @name InitiateCreate
-     * @summary Initiate Voice Call
-     * @request POST:/voice/initiate
+     * @tags Auth
+     * @name GetAuth
+     * @summary Introspect the current session
+     * @request GET:/auth/me
      * @secure
      */
-    initiateCreate: (
-      data: {
-        /** @format uuid */
-        agentId: string;
-        targetNumber: string;
-        context?: object;
+    getAuth: (params: RequestParams = {}) =>
+      this.request<
+        {
+          user?: User;
+        },
+        ErrorResponse
+      >({
+        path: `/auth/me`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Auth
+     * @name LogoutCreate
+     * @summary Clear the current session cookies
+     * @request POST:/auth/logout
+     */
+    logoutCreate: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        any
+      >({
+        path: `/auth/logout`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Auth
+     * @name RefreshCreate
+     * @summary Rotate the access token using a refresh token
+     * @request POST:/auth/refresh
+     */
+    refreshCreate: (
+      data?: {
+        /** Refresh token. If omitted, the `refresh_token` cookie is used instead. */
+        token?: string;
       },
       params: RequestParams = {},
     ) =>
-      this.request<void, any>({
-        path: `/voice/initiate`,
+      this.request<
+        {
+          token?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/auth/refresh`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  workflows = {
+    /**
+     * @description There is exactly one `Workflow` row per tenant today (single-flow model, not a collection) — this is `GET /workflow`, not `GET /workflows`.
+     *
+     * @tags Workflows
+     * @name WorkflowList
+     * @summary Get the tenant's workflow
+     * @request GET:/workflow
+     * @secure
+     */
+    workflowList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          workflow?: Workflow | null;
+        },
+        any
+      >({
+        path: `/workflow`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Workflows
+     * @name WorkflowCreate
+     * @summary Create/save the tenant's workflow
+     * @request POST:/workflow
+     * @secure
+     */
+    workflowCreate: (
+      data: {
+        name?: string;
+        nodes?: any[];
+        edges?: any[];
+        commitMessage?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Editing `nodes`/`edges` demotes `status` back to `draft` if it was `active`.
+     *
+     * @tags Workflows
+     * @name WorkflowUpdate
+     * @summary Update the tenant's workflow
+     * @request PUT:/workflow
+     * @secure
+     */
+    workflowUpdate: (
+      data: {
+        name?: string;
+        nodes?: any[];
+        edges?: any[];
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Workflows
+     * @name WorkflowDelete
+     * @summary Delete the tenant's workflow
+     * @request DELETE:/workflow
+     * @secure
+     */
+    workflowDelete: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Workflows
+     * @name HistoryList
+     * @summary List saved versions of the tenant's workflow
+     * @request GET:/workflow/history
+     * @secure
+     */
+    historyList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          history?: WorkflowHistoryEntry[];
+        },
+        any
+      >({
+        path: `/workflow/history`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Workflows
+     * @name RestoreCreate
+     * @summary Restore a previous workflow version
+     * @request POST:/workflow/restore
+     * @secure
+     */
+    restoreCreate: (
+      data: {
+        version: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/restore`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Workflows
+     * @name DuplicateCreate
+     * @summary Duplicate a workflow
+     * @request POST:/workflow/duplicate
+     * @secure
+     */
+    duplicateCreate: (
+      data: {
+        sourceId: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/duplicate`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description The only route that can set `Workflow.status = 'active'`. Runs `ValidationEngine` (structural graph validity) and `validateRuntimeCompatibility` (does the telephony runtime actually know how to execute every node in this graph) before publishing — see `docs/patterns/workflow-execution-contract.md`. This closes `AGENTS.md` blocker #13.
+     *
+     * @tags Workflows
+     * @name PublishCreate
+     * @summary Publish the tenant's workflow (flip status to `active`)
+     * @request POST:/workflow/publish
+     * @secure
+     */
+    publishCreate: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/publish`,
+        method: "POST",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  workflowCollaboration = {
+    /**
+     * No description
+     *
+     * @tags WorkflowCollaboration
+     * @name CommentsCreate
+     * @summary Add a comment to a workflow node
+     * @request POST:/workflow/comments
+     * @secure
+     */
+    commentsCreate: (
+      data: {
+        nodeId: string;
+        text: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/comments`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags WorkflowCollaboration
+     * @name CommentsResolveCreate
+     * @summary Resolve a workflow comment
+     * @request POST:/workflow/comments/resolve
+     * @secure
+     */
+    commentsResolveCreate: (
+      data: {
+        commentId: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/comments/resolve`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags WorkflowCollaboration
+     * @name LockCreate
+     * @summary Lock a workflow node for exclusive editing
+     * @request POST:/workflow/lock
+     * @secure
+     */
+    lockCreate: (
+      data: {
+        nodeId: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/lock`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags WorkflowCollaboration
+     * @name UnlockCreate
+     * @summary Release a workflow node lock
+     * @request POST:/workflow/unlock
+     * @secure
+     */
+    unlockCreate: (
+      data: {
+        nodeId: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** `nodes`/`edges` are stored as Prisma `Json` and are intentionally untyped here — the real shape (`StudioNode`/`StudioEdge` per node type) is documented in `docs/patterns/workflow-execution-contract.md`, not duplicated in the OpenAPI schema, because it evolves independently of the HTTP contract. */
+          workflow?: Workflow;
+        },
+        ErrorResponse
+      >({
+        path: `/workflow/unlock`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  callLogs = {
+    /**
+     * No description
+     *
+     * @tags CallLogs
+     * @name CallLogsList
+     * @summary List call logs for the tenant
+     * @request GET:/call-logs
+     * @secure
+     */
+    callLogsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          callLogs?: CallLog[];
+        },
+        any
+      >({
+        path: `/call-logs`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags CallLogs
+     * @name CallLogsCreate
+     * @summary Create a call log entry
+     * @request POST:/call-logs
+     * @secure
+     */
+    callLogsCreate: (
+      data: {
+        contactName?: string;
+        duration?: string;
+        status?: "Concluído" | "Falhou";
+        agent?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          log?: CallLog;
+        },
+        ErrorResponse
+      >({
+        path: `/call-logs`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags CallLogs
+     * @name CallLogsUpdate
+     * @summary Update a call log entry
+     * @request PUT:/call-logs/{id}
+     * @secure
+     */
+    callLogsUpdate: (
+      id: string,
+      data: {
+        contactName?: string;
+        duration?: string;
+        status?: "Concluído" | "Falhou";
+        agent?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          log?: CallLog;
+        },
+        ErrorResponse
+      >({
+        path: `/call-logs/${id}`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags CallLogs
+     * @name CallLogsDelete
+     * @summary Delete a call log entry
+     * @request DELETE:/call-logs/{id}
+     * @secure
+     */
+    callLogsDelete: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/call-logs/${id}`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  onboarding = {
+    /**
+     * No description
+     *
+     * @tags Onboarding
+     * @name OnboardingList
+     * @summary Get the current user's onboarding checklist
+     * @request GET:/onboarding
+     * @secure
+     */
+    onboardingList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          checklist?: Record<string, boolean>;
+        },
+        any
+      >({
+        path: `/onboarding`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Onboarding
+     * @name OnboardingCreate
+     * @summary Save the onboarding checklist
+     * @request POST:/onboarding
+     * @secure
+     */
+    onboardingCreate: (
+      data: {
+        checklist: Record<string, boolean>;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          checklist?: Record<string, boolean>;
+        },
+        ErrorResponse
+      >({
+        path: `/onboarding`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Onboarding
+     * @name OnboardingUpdate
+     * @summary Save the onboarding checklist (alias of POST)
+     * @request PUT:/onboarding
+     * @secure
+     */
+    onboardingUpdate: (
+      data: {
+        checklist: Record<string, boolean>;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          checklist?: Record<string, boolean>;
+        },
+        ErrorResponse
+      >({
+        path: `/onboarding`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Onboarding
+     * @name OnboardingDelete
+     * @summary Reset the onboarding checklist
+     * @request DELETE:/onboarding
+     * @secure
+     */
+    onboardingDelete: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        any
+      >({
+        path: `/onboarding`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  brandColor = {
+    /**
+     * @description Public-ish read: uses `attachAuthIfPresent`, not `requireTenant` — resolves to the caller's tenant color if authenticated, otherwise returns the platform default. Does not require a session.
+     *
+     * @tags BrandColor
+     * @name BrandColorList
+     * @summary Get the tenant's brand color
+     * @request GET:/brand-color
+     */
+    brandColorList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          brandColor?: string;
+        },
+        any
+      >({
+        path: `/brand-color`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags BrandColor
+     * @name BrandColorCreate
+     * @summary Set the tenant's brand color
+     * @request POST:/brand-color
+     * @secure
+     */
+    brandColorCreate: (
+      data: {
+        color: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          brandColor?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/brand-color`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags BrandColor
+     * @name BrandColorUpdate
+     * @summary Set the tenant's brand color (alias of POST)
+     * @request PUT:/brand-color
+     * @secure
+     */
+    brandColorUpdate: (
+      data: {
+        color: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          brandColor?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/brand-color`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags BrandColor
+     * @name BrandColorDelete
+     * @summary Reset the tenant's brand color to the platform default
+     * @request DELETE:/brand-color
+     * @secure
+     */
+    brandColorDelete: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          /** @example "#2563eb" */
+          brandColor?: string;
+        },
+        any
+      >({
+        path: `/brand-color`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  voiceRuntime = {
+    /**
+     * No description
+     *
+     * @tags VoiceRuntime
+     * @name VoiceRuntimeList
+     * @summary Get the tenant's voice runtime configuration
+     * @request GET:/voice-runtime
+     * @secure
+     */
+    voiceRuntimeList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          config?: object;
+        },
+        any
+      >({
+        path: `/voice-runtime`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags VoiceRuntime
+     * @name VoiceRuntimeCreate
+     * @summary Create the tenant's voice runtime configuration
+     * @request POST:/voice-runtime
+     * @secure
+     */
+    voiceRuntimeCreate: (
+      data: {
+        config: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          config?: object;
+        },
+        ErrorResponse
+      >({
+        path: `/voice-runtime`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags VoiceRuntime
+     * @name VoiceRuntimeUpdate
+     * @summary Update the tenant's voice runtime configuration
+     * @request PUT:/voice-runtime
+     * @secure
+     */
+    voiceRuntimeUpdate: (
+      data: {
+        config: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          config?: object;
+        },
+        ErrorResponse
+      >({
+        path: `/voice-runtime`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags VoiceRuntime
+     * @name VoiceRuntimeDelete
+     * @summary Reset the tenant's voice runtime configuration to defaults
+     * @request DELETE:/voice-runtime
+     * @secure
+     */
+    voiceRuntimeDelete: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        any
+      >({
+        path: `/voice-runtime`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  voiceOutbound = {
+    /**
+     * @description Asks the telephony provider to dial `targetNumber` and hand the answered call to the given agent. Returns as soon as the call is queued — the conversation and its result happen afterwards, and the outcome is delivered via the `agent.call.ended` webhook (see `docs/webhooks/index.md`).
+     *
+     * @tags VoiceOutbound
+     * @name OutboundCreate
+     * @summary Place an Outbound Voice Call
+     * @request POST:/voice/outbound
+     * @secure
+     */
+    outboundCreate: (
+      data: {
+        /** @format uuid */
+        agentId: string;
+        /**
+         * Destination number in E.164 format.
+         * @example "+5511999998888"
+         */
+        targetNumber: string;
+        /**
+         * Free-form facts about who is being called. Values are available as `{{placeholder}}` substitutions in the agent's `outboundGreeting` and are echoed back on the `agent.call.ended` webhook for correlation.
+         * @example {"name":"João","company":"Transportadora X","leadId":"ckv1234"}
+         */
+        context?: object;
+        /**
+         * Per-call destination for the `agent.call.ended` webhook, overriding the deployment-wide `WEBHOOK_URL`. Must be HTTPS in production and must not point at a private/reserved/loopback host (SSRF guard) — see `src/validators/index.ts`.
+         * @format uri
+         */
+        callbackUrl?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** Correlates this call with the `agent.call.ended` webhook. */
+          sessionId?: string;
+          callSid?: string;
+          /** @example "queued" */
+          status?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/voice/outbound`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  metrics = {
+    /**
+     * No description
+     *
+     * @tags Metrics
+     * @name MetricsList
+     * @summary List metrics for the tenant
+     * @request GET:/metrics
+     * @secure
+     */
+    metricsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          metrics?: Metric[];
+        },
+        any
+      >({
+        path: `/metrics`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Metrics
+     * @name MetricsCreate
+     * @summary Record a metric
+     * @request POST:/metrics
+     * @secure
+     */
+    metricsCreate: (
+      data: {
+        name: string;
+        value: number;
+        tags?: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          metric?: Metric;
+        },
+        ErrorResponse
+      >({
+        path: `/metrics`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Metrics
+     * @name MetricsUpdate
+     * @summary Not implemented — consolidated metrics cannot be edited directly
+     * @request PUT:/metrics
+     * @secure
+     */
+    metricsUpdate: (params: RequestParams = {}) =>
+      this.request<any, ErrorResponse>({
+        path: `/metrics`,
+        method: "PUT",
+        secure: true,
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Metrics
+     * @name MetricsDelete
+     * @summary Clear metrics for the tenant
+     * @request DELETE:/metrics
+     * @secure
+     */
+    metricsDelete: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        any
+      >({
+        path: `/metrics`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  sessions = {
+    /**
+     * No description
+     *
+     * @tags Sessions
+     * @name SessionsList
+     * @summary List sessions for the tenant
+     * @request GET:/sessions
+     * @secure
+     */
+    sessionsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          sessions?: Session[];
+        },
+        any
+      >({
+        path: `/sessions`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Sessions
+     * @name SessionsCreate
+     * @summary Create a session
+     * @request POST:/sessions
+     * @secure
+     */
+    sessionsCreate: (
+      data: {
+        agentId?: string;
+        channel?: string;
+        metadata?: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          session?: Session;
+        },
+        ErrorResponse
+      >({
+        path: `/sessions`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Sessions
+     * @name SessionsUpdate
+     * @summary Update a session
+     * @request PUT:/sessions/{id}
+     * @secure
+     */
+    sessionsUpdate: (
+      id: string,
+      data: {
+        status?: string;
+        metadata?: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          session?: Session;
+        },
+        ErrorResponse
+      >({
+        path: `/sessions/${id}`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Sessions
+     * @name SessionsDelete
+     * @summary End and remove a session
+     * @request DELETE:/sessions/{id}
+     * @secure
+     */
+    sessionsDelete: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/sessions/${id}`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  settings = {
+    /**
+     * No description
+     *
+     * @tags Settings
+     * @name SettingsList
+     * @summary Get the current user's settings
+     * @request GET:/settings
+     * @secure
+     */
+    settingsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          settings?: object;
+        },
+        any
+      >({
+        path: `/settings`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Settings
+     * @name SettingsCreate
+     * @summary Create the current user's settings
+     * @request POST:/settings
+     * @secure
+     */
+    settingsCreate: (
+      data: {
+        settings: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          settings?: object;
+        },
+        ErrorResponse
+      >({
+        path: `/settings`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Settings
+     * @name SettingsUpdate
+     * @summary Update the current user's settings
+     * @request PUT:/settings
+     * @secure
+     */
+    settingsUpdate: (
+      data: {
+        settings: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          settings?: object;
+        },
+        ErrorResponse
+      >({
+        path: `/settings`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Settings
+     * @name SettingsDelete
+     * @summary Reset the current user's settings
+     * @request DELETE:/settings
+     * @secure
+     */
+    settingsDelete: (params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        any
+      >({
+        path: `/settings`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  agents = {
+    /**
+     * No description
+     *
+     * @tags Agents
+     * @name AgentsList
+     * @summary List Agents
+     * @request GET:/agents
+     * @secure
+     */
+    agentsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          agents?: Agent[];
+        },
+        any
+      >({
+        path: `/agents`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Agents
+     * @name AgentsCreate
+     * @summary Create an Agent
+     * @request POST:/agents
+     * @secure
+     */
+    agentsCreate: (
+      data: {
+        name: string;
+        model: string;
+        configuration?: object;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          agent?: Agent;
+        },
+        ErrorResponse
+      >({
+        path: `/agents`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Agents
+     * @name AgentsDetail
+     * @summary Get an agent by id
+     * @request GET:/agents/{id}
+     * @secure
+     */
+    agentsDetail: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          agent?: Agent;
+        },
+        ErrorResponse
+      >({
+        path: `/agents/${id}`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Agents
+     * @name AgentsDelete
+     * @summary Delete an agent
+     * @request DELETE:/agents/{id}
+     * @secure
+     */
+    agentsDelete: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+        },
+        any
+      >({
+        path: `/agents/${id}`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Agents
+     * @name ConfigUpdate
+     * @summary Update an agent's configuration
+     * @request PUT:/agents/{id}/config
+     * @secure
+     */
+    configUpdate: (id: string, data: object, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          agent?: Agent;
+        },
+        ErrorResponse
+      >({
+        path: `/agents/${id}/config`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  knowledge = {
+    /**
+     * @description Appends to `AgentConfiguration.knowledge[]`. There is no vector database behind this today — matching is a keyword-based simulation, see `POST /agents/{id}/rag/test` and `docs/ai/index.md`.
+     *
+     * @tags Knowledge
+     * @name KnowledgeCreate
+     * @summary Add a document to an agent's knowledge base
+     * @request POST:/agents/{id}/knowledge
+     * @secure
+     */
+    knowledgeCreate: (
+      id: string,
+      data: {
+        agentId: string;
+        name: string;
+        keyword: string;
+        content: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/agents/${id}/knowledge`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description In-memory keyword simulation (`KnowledgeConfidenceEngine`), not a real vector search — see `docs/ai/index.md` for the current state of RAG on this platform.
+     *
+     * @tags Knowledge
+     * @name RagTestCreate
+     * @summary Test a RAG query against an agent's knowledge base
+     * @request POST:/agents/{id}/rag/test
+     * @secure
+     */
+    ragTestCreate: (
+      id: string,
+      data: {
+        agentId: string;
+        query: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          result?: RagTestResult;
+        },
+        ErrorResponse
+      >({
+        path: `/agents/${id}/rag/test`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  organizations = {
+    /**
+     * @description Returns a single-element array with the caller's own tenant — there is no cross-tenant organization listing today.
+     *
+     * @tags Organizations
+     * @name OrganizationsList
+     * @summary List organizations visible to the caller
+     * @request GET:/organizations
+     * @secure
+     */
+    organizationsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          organizations?: Organization[];
+        },
+        any
+      >({
+        path: `/organizations`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  users = {
+    /**
+     * @description Requires the `admin` role.
+     *
+     * @tags Users
+     * @name UsersList
+     * @summary List users in the tenant
+     * @request GET:/users
+     * @secure
+     */
+    usersList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          users?: User[];
+        },
+        ErrorResponse
+      >({
+        path: `/users`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Requires the `admin` role.
+     *
+     * @tags Users
+     * @name UsersCreate
+     * @summary Create a user in the tenant
+     * @request POST:/users
+     * @secure
+     */
+    usersCreate: (
+      data: {
+        /** @format email */
+        email: string;
+        /** @minLength 6 */
+        password: string;
+        companyName?: string;
+        role?: "admin" | "user";
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          user?: User;
+        },
+        ErrorResponse
+      >({
+        path: `/users`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Self-service on the caller's own account, or admin-on-behalf-of within the same tenant.
+     *
+     * @tags Users
+     * @name UsersUpdate
+     * @summary Update a user's profile
+     * @request PUT:/users/{id}
+     * @secure
+     */
+    usersUpdate: (
+      id: string,
+      data: {
+        companyName?: string;
+        role?: "admin" | "user";
+        /** @minLength 6 */
+        password?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/users/${id}`,
+        method: "PUT",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Requires the `admin` role.
+     *
+     * @tags Users
+     * @name UsersDelete
+     * @summary Delete a user
+     * @request DELETE:/users/{id}
+     * @secure
+     */
+    usersDelete: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/users/${id}`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Irreversibly scrubs the account's personal data (email, company name, credential) instead of hiding the row — implements Art. 18, VI, Lei 13.709/2018. Self-service on the caller's own account, or admin-on-behalf-of within the same tenant; enforced inside the service layer, not just at the route.
+     *
+     * @tags Users
+     * @name AnonymizeCreate
+     * @summary LGPD data-subject erasure request
+     * @request POST:/users/{id}/anonymize
+     * @secure
+     */
+    anonymizeCreate: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          message?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/users/${id}/anonymize`,
+        method: "POST",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  ai = {
+    /**
+     * @description Routed through `LLMGateway.processRequest`, which performs the tenant-scoped AI-provider consent check and provider failover chain (preferred provider → Gemini as guaranteed fallback) — the same gateway every other AI-Gateway caller uses.
+     *
+     * @tags AI
+     * @name ChatCreate
+     * @summary Send a message to the AI Gateway (Playground)
+     * @request POST:/chat
+     * @secure
+     */
+    chatCreate: (
+      data: {
+        /** Optional system prompt override. */
+        prompt?: string;
+        currentMessages: {
+          role: "user" | "agent";
+          text: string;
+        }[];
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          text?: string;
+          providerUsed?: "GoogleGemini" | "OpenAI" | "Claude" | "NONE";
+          latencyMs?: number;
+          tokensUsed?: number;
+          costUSD?: number;
+          fromFallback?: boolean;
+          /** Present (`true`) only when tenant AI-provider consent has not been granted. */
+          blockedByConsent?: boolean;
+        },
+        ErrorResponse
+      >({
+        path: `/chat`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deliberately fails closed with `501` — previously this endpoint returned an empty audio payload with `200`, which made callers believe synthesis had succeeded. Phone-call speech synthesis goes through the voice runtime (`lib/voice-runtime/**`), not this HTTP endpoint.
+     *
+     * @tags AI
+     * @name PostAi
+     * @summary HTTP text-to-speech (not implemented)
+     * @request POST:/tts
+     * @secure
+     */
+    postAi: (data?: object, params: RequestParams = {}) =>
+      this.request<any, ErrorResponse>({
+        path: `/tts`,
         method: "POST",
         body: data,
         secure: true,
         type: ContentType.Json,
         ...params,
       }),
-  };
-  inbound = {
+
+    /**
+     * @description Calls `GoogleGenAI` directly (not via `LLMGateway`) — requires `GEMINI_API_KEY` to be configured, and requires tenant AI-provider consent (see `POST /ai/consent`).
+     *
+     * @tags AI
+     * @name GenerateMusicCreate
+     * @summary Generate music via Gemini (Lyria)
+     * @request POST:/generate-music
+     * @secure
+     */
+    generateMusicCreate: (
+      data: {
+        prompt: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          audioBase64?: string;
+          mimeType?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/generate-music`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Calls `GoogleGenAI` directly. Requires tenant AI-provider consent.
+     *
+     * @tags AI
+     * @name GenerateVideoCreate
+     * @summary Start a video generation job via Gemini (Veo)
+     * @request POST:/generate-video
+     * @secure
+     */
+    generateVideoCreate: (
+      data: {
+        prompt: string;
+        /** Base64-encoded seed image, optional. */
+        imageBytes?: string;
+        mimeType?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          operationName?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/generate-video`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Calls `GoogleGenAI` directly. Requires tenant AI-provider consent.
+     *
+     * @tags AI
+     * @name VideoStatusCreate
+     * @summary Poll a video generation job's status
+     * @request POST:/video-status
+     * @secure
+     */
+    videoStatusCreate: (
+      data: {
+        operationName: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          done?: boolean;
+          error?: object | null;
+        },
+        ErrorResponse
+      >({
+        path: `/video-status`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Calls `GoogleGenAI` directly. Requires tenant AI-provider consent. Streams `video/mp4`.
+     *
+     * @tags AI
+     * @name VideoDownloadList
+     * @summary Download a finished generated video
+     * @request GET:/video-download
+     * @secure
+     */
+    videoDownloadList: (
+      query: {
+        operationName: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<Blob, void>({
+        path: `/video-download`,
+        method: "GET",
+        query: query,
+        secure: true,
+        ...params,
+      }),
+
+    /**
+     * @description Calls `GoogleGenAI` directly with a fixed prompt per `mode`. Requires tenant AI-provider consent. Returns the same `nodes` shape it received, with `data.label`/`data.config` rewritten by the model — this is a Studio editing aid, not a validated write to `Workflow.nodes` (the client must still call `PUT /workflow` to persist it).
+     *
+     * @tags AI
+     * @name RefactorCreate
+     * @summary AI-refactor a set of workflow nodes
+     * @request POST:/ai/refactor
+     * @secure
+     */
+    refactorCreate: (
+      data: {
+        mode: "simplify" | "reduceCost" | "reduceLatency" | "moreHuman";
+        nodes: any[];
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          nodes?: any[];
+        },
+        ErrorResponse
+      >({
+        path: `/ai/refactor`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Calls `GoogleGenAI` directly with a fixed system prompt describing all 12 Studio node types. Requires tenant AI-provider consent. The returned graph is a Studio editing aid — it is not validated against `ValidationEngine`/runtime capability until the client saves and publishes it (`POST /workflow`, `POST /workflow/publish`); several of the documented node types are rejected at publish time today, see `docs/patterns/workflow-execution-contract.md`.
+     *
+     * @tags AI
+     * @name GenerateWorkflowCreate
+     * @summary Generate a full workflow graph from a natural-language prompt
+     * @request POST:/ai/generate-workflow
+     * @secure
+     */
+    generateWorkflowCreate: (
+      data: {
+        prompt: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          nodes?: any[];
+          edges?: any[];
+        },
+        ErrorResponse
+      >({
+        path: `/ai/generate-workflow`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
     /**
      * No description
      *
-     * @name InboundCreate
-     * @summary Twilio Inbound Webhook
-     * @request POST:/telephony/inbound
+     * @tags AI
+     * @name ConsentList
+     * @summary Get the tenant's AI-provider consent status
+     * @request GET:/ai/consent
+     * @secure
      */
-    inboundCreate: (data: object, params: RequestParams = {}) =>
-      this.request<void, any>({
-        path: `/telephony/inbound`,
+    consentList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          /** Tenant-level consent to send data to external AI providers (LGPD, `AGENTS.md` §16). */
+          consent?: AiConsent;
+        },
+        any
+      >({
+        path: `/ai/consent`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags AI
+     * @name ConsentCreate
+     * @summary Grant or revoke the tenant's AI-provider consent
+     * @request POST:/ai/consent
+     * @secure
+     */
+    consentCreate: (
+      data: {
+        granted: boolean;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          success?: boolean;
+          /** Tenant-level consent to send data to external AI providers (LGPD, `AGENTS.md` §16). */
+          consent?: AiConsent;
+        },
+        ErrorResponse
+      >({
+        path: `/ai/consent`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  observability = {
+    /**
+     * @description Always filtered by the authenticated caller's own `tenantId` inside the collector — `requireTenant` alone only proves the caller is authenticated for *some* tenant, not that they own the data returned.
+     *
+     * @tags Observability
+     * @name MetricsList
+     * @summary Get OpenTelemetry spans/metrics collected for the tenant
+     * @request GET:/observability/metrics
+     * @secure
+     */
+    metricsList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          spans?: object[];
+          metrics?: object[];
+        },
+        any
+      >({
+        path: `/observability/metrics`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  telephony = {
+    /**
+     * @description Twilio-signed webhook (`X-Twilio-Signature`, validated against `PUBLIC_BASE_URL` + `TWILIO_AUTH_TOKEN`), not a session-authenticated route — not for direct SDK use. Body is `application/x-www-form-urlencoded`, Twilio's standard call-status payload.
+     *
+     * @tags Telephony
+     * @name TwilioVoiceCreate
+     * @summary Twilio inbound call webhook
+     * @request POST:/telephony/twilio/voice
+     */
+    twilioVoiceCreate: (data: object, params: RequestParams = {}) =>
+      this.request<string, void>({
+        path: `/telephony/twilio/voice`,
         method: "POST",
         body: data,
         type: ContentType.UrlEncoded,
+        ...params,
+      }),
+
+    /**
+     * @description Twilio-signed webhook. The session id travels in the query string (`?sessionId=...`), set when the call was queued.
+     *
+     * @tags Telephony
+     * @name TwilioOutboundCreate
+     * @summary Twilio TwiML webhook for a call placed via `POST /voice/outbound`
+     * @request POST:/telephony/twilio/outbound
+     */
+    twilioOutboundCreate: (
+      query: {
+        sessionId: string;
+      },
+      data: object,
+      params: RequestParams = {},
+    ) =>
+      this.request<string, void>({
+        path: `/telephony/twilio/outbound`,
+        method: "POST",
+        query: query,
+        body: data,
+        type: ContentType.UrlEncoded,
+        ...params,
+      }),
+
+    /**
+     * @description Twilio-signed webhook.
+     *
+     * @tags Telephony
+     * @name TwilioGatherCreate
+     * @summary Twilio speech-gather webhook (one per conversation turn)
+     * @request POST:/telephony/twilio/gather
+     */
+    twilioGatherCreate: (
+      query: {
+        sessionId: string;
+      },
+      data: object,
+      params: RequestParams = {},
+    ) =>
+      this.request<string, void>({
+        path: `/telephony/twilio/gather`,
+        method: "POST",
+        query: query,
+        body: data,
+        type: ContentType.UrlEncoded,
+        ...params,
+      }),
+
+    /**
+     * @description Twilio-signed webhook. Finalizes the call record and triggers the `agent.call.ended` webhook (see `docs/webhooks/index.md`).
+     *
+     * @tags Telephony
+     * @name TwilioStatusCreate
+     * @summary Twilio call-status callback (call ended)
+     * @request POST:/telephony/twilio/status
+     */
+    twilioStatusCreate: (data: object, params: RequestParams = {}) =>
+      this.request<void, void>({
+        path: `/telephony/twilio/status`,
+        method: "POST",
+        body: data,
+        type: ContentType.UrlEncoded,
+        ...params,
+      }),
+  };
+  webhooks = {
+    /**
+     * @description Server-to-server webhook, authenticated by a pre-shared secret (`X-AtlasGR-Webhook-Secret` header, compared against `ATLASGR_WEBHOOK_SECRET`) rather than a user session — mounted before CSRF protection. Idempotent per the underlying call request (`AGENTS.md` blocker #11).
+     *
+     * @tags Webhooks
+     * @name AtlasgrOutboundCreate
+     * @summary AtlasGR CRM → trigger an outbound prospecting call
+     * @request POST:/webhook/atlasgr/outbound
+     */
+    atlasgrOutboundCreate: (
+      data: {
+        /**
+         * @minLength 8
+         * @maxLength 20
+         * @example "+5511999998888"
+         */
+        phone_number: string;
+        /** @maxLength 200 */
+        name: string;
+        /** @maxLength 200 */
+        company: string;
+        /**
+         * Optional and additive — this route's original contract (owned by the sibling AtlasGR repository) did not have this field; it stays optional so a client on the old contract keeps working.
+         * @maxLength 200
+         */
+        lead_id?: string;
+        /**
+         * @minLength 8
+         * @maxLength 20
+         */
+        from?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<object, ErrorResponse>({
+        path: `/webhook/atlasgr/outbound`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Server-to-server webhook. `{token}` is compared against `BLAND_WEBHOOK_TOKEN` (Bland AI's outbound-call API takes a plain callback URL with no custom-header support, so the shared secret travels in the path instead of a header). Idempotent per `call_id` (`AGENTS.md` blocker #11); forwards the result to AtlasGR (`ATLASGR_BASE_URL`/api/webhooks/voice-result`) once processed.
+     *
+     * @tags Webhooks
+     * @name BlandCreate
+     * @summary Bland AI → call-result callback
+     * @request POST:/webhooks/bland/{token}
+     */
+    blandCreate: (
+      token: string,
+      data: {
+        call_id: string;
+        status?: string;
+        to?: string;
+        concatenated_transcript?: string;
+        summary?: string;
+        recording_url?: string;
+        call_length?: number;
+        completed?: boolean;
+        variables?: Record<string, any>;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          received?: boolean;
+          duplicate?: boolean;
+        },
+        void
+      >({
+        path: `/webhooks/bland/${token}`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  health = {
+    /**
+     * @description Also mounted without the `/api` prefix at the server root.
+     *
+     * @tags Health
+     * @name HealthList
+     * @summary Liveness/health check
+     * @request GET:/health
+     */
+    healthList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          /** @example "ok" */
+          status?: string;
+        },
+        any
+      >({
+        path: `/health`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Health
+     * @name LiveList
+     * @summary Kubernetes/Cloud Run liveness probe
+     * @request GET:/live
+     */
+    liveList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          /** @example "ok" */
+          status?: string;
+        },
+        any
+      >({
+        path: `/live`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Health
+     * @name ReadyList
+     * @summary Readiness probe (checks Postgres and Redis connectivity)
+     * @request GET:/ready
+     */
+    readyList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          /** @example "ready" */
+          status?: string;
+          checks?: {
+            database?: "ok" | "error";
+            redis?: "ok" | "error";
+          };
+        },
+        {
+          /** @example "not_ready" */
+          status?: string;
+          checks?: {
+            database?: "ok" | "error";
+            redis?: "ok" | "error";
+          };
+        }
+      >({
+        path: `/ready`,
+        method: "GET",
+        format: "json",
         ...params,
       }),
   };
