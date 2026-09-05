@@ -10,6 +10,7 @@ import { auth } from '../lib/auth';
 import { useSessionStore } from '../store/useSessionStore';
 import { useTheme } from './design-system/ThemeContext';
 import { useToast, AtlasLogo } from './design-system';
+import { getAccessibleTextOnBrand } from './design-system/tokens';
 
 export function Sidebar() {
   const location = useLocation();
@@ -20,6 +21,11 @@ export function Sidebar() {
   const sessionStatus = useSessionStore((state) => state.sessionStatus);
   const { theme, setTheme } = useTheme();
   const { showToast } = useToast();
+  // `--brand-color` is tenant-controlled (Organization branding), so a hardcoded `text-white` on
+  // `bg-brand` (theme toggle, avatar, active filter pill) can fail WCAG contrast for a light
+  // tenant color — see components/design-system/tokens.ts for the contrast math.
+  const brandColor = useSessionStore((state) => state.brandColor);
+  const accessibleBrandText = getAccessibleTextOnBrand(brandColor);
 
   // Navigation state management for favorites and recents
   const [favorites, setFavorites] = useState<string[]>(['/dashboard', '/dashboard/agents/new']);
@@ -108,15 +114,18 @@ export function Sidebar() {
 
   const isActive = (path: string) => location.pathname === path || location.pathname.startsWith(path + '/');
 
-  const navItemClass = (path: string) => 
+  const navItemClass = (path: string) =>
     `flex items-center justify-between group/item p-2.5 rounded-lg transition-all text-xs font-semibold ${
-      isActive(path) 
-        ? 'text-white shadow-xs' 
+      isActive(path)
+        ? 'shadow-xs'
         : 'text-slate-400 hover:bg-slate-800/60 hover:text-white'
     }`;
 
-  const navItemStyle = (path: string) => 
-    isActive(path) ? { backgroundColor: 'var(--brand-color)' } : {};
+  // `--brand-color` is tenant-controlled, so the active nav item's text color must be computed
+  // (not hardcoded `text-white`) to keep >=4.5:1 contrast against whatever color a tenant picks —
+  // see components/design-system/tokens.ts.
+  const navItemStyle = (path: string) =>
+    isActive(path) ? { backgroundColor: 'var(--brand-color)', color: accessibleBrandText } : {};
 
   const triggerSearch = () => {
     window.dispatchEvent(new CustomEvent('open-command-palette'));
@@ -310,26 +319,35 @@ export function Sidebar() {
       <div className="py-2.5 px-2 mb-2 mt-4 bg-slate-850/40 rounded-lg border border-slate-800/65 flex items-center justify-between">
         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Aparência</span>
         <div className="flex gap-1">
-          <button 
+          <button
             onClick={() => setTheme('light')}
-            className={`p-1.5 rounded transition-colors ${theme === 'light' ? 'bg-brand text-white' : 'text-slate-500 hover:text-slate-350 hover:bg-slate-800/40'}`}
+            style={theme === 'light' ? { backgroundColor: 'var(--brand-color, #ff5618)', color: accessibleBrandText } : undefined}
+            className={`p-1.5 rounded transition-colors ${theme === 'light' ? '' : 'text-slate-500 hover:text-slate-350 hover:bg-slate-800/40'}`}
             title="Tema Claro"
+            aria-label="Tema Claro"
+            aria-pressed={theme === 'light'}
           >
-            <Sun className="h-3.5 w-3.5" />
+            <Sun aria-hidden="true" className="h-3.5 w-3.5" />
           </button>
-          <button 
+          <button
             onClick={() => setTheme('dark')}
-            className={`p-1.5 rounded transition-colors ${theme === 'dark' ? 'bg-brand text-white' : 'text-slate-500 hover:text-slate-350 hover:bg-slate-800/40'}`}
+            style={theme === 'dark' ? { backgroundColor: 'var(--brand-color, #ff5618)', color: accessibleBrandText } : undefined}
+            className={`p-1.5 rounded transition-colors ${theme === 'dark' ? '' : 'text-slate-500 hover:text-slate-350 hover:bg-slate-800/40'}`}
             title="Tema Escuro"
+            aria-label="Tema Escuro"
+            aria-pressed={theme === 'dark'}
           >
-            <Moon className="h-3.5 w-3.5" />
+            <Moon aria-hidden="true" className="h-3.5 w-3.5" />
           </button>
-          <button 
+          <button
             onClick={() => setTheme('system')}
-            className={`p-1.5 rounded transition-colors ${theme === 'system' ? 'bg-brand text-white' : 'text-slate-500 hover:text-slate-350 hover:bg-slate-800/40'}`}
+            style={theme === 'system' ? { backgroundColor: 'var(--brand-color, #ff5618)', color: accessibleBrandText } : undefined}
+            className={`p-1.5 rounded transition-colors ${theme === 'system' ? '' : 'text-slate-500 hover:text-slate-350 hover:bg-slate-800/40'}`}
             title="Tema do Sistema"
+            aria-label="Tema do Sistema"
+            aria-pressed={theme === 'system'}
           >
-            <Laptop className="h-3.5 w-3.5" />
+            <Laptop aria-hidden="true" className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -347,7 +365,11 @@ export function Sidebar() {
             </div>
           ) : (
             <div className="flex items-center gap-2.5 text-left">
-              <div className="w-8 h-8 rounded-full bg-brand flex items-center justify-center text-sm font-bold text-white shrink-0">
+              <div
+                className="w-8 h-8 rounded-full bg-brand flex items-center justify-center text-sm font-bold shrink-0"
+                style={{ color: accessibleBrandText }}
+                aria-hidden="true"
+              >
                 {user?.email?.[0]?.toUpperCase() || '?'}
               </div>
               <div className="text-xs overflow-hidden">
@@ -392,9 +414,11 @@ export function Sidebar() {
               <button
                 key={filter}
                 onClick={() => setNotifFilter(filter)}
+                aria-pressed={notifFilter === filter}
+                style={notifFilter === filter ? { backgroundColor: 'var(--brand-color, #ff5618)', borderColor: 'var(--brand-color, #ff5618)', color: accessibleBrandText } : undefined}
                 className={`px-2.5 py-1 text-[9px] font-bold rounded-full border transition-all shrink-0 capitalize ${
                   notifFilter === filter
-                    ? 'bg-brand text-white border-brand'
+                    ? ''
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
