@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import {
   Settings2, Code, Activity, Variable, Plus,
   BookOpen, Link, Trash2, ShieldAlert
@@ -16,6 +16,10 @@ export function InspectorPanel({ selectedNode }: InspectorPanelProps) {
   const [newVarName, setNewVarName] = useState('');
   const [newVarVal, setNewVarVal] = useState('');
   const [showAddVar, setShowAddVar] = useState(false);
+  const labelId = useId();
+  const descriptionId = useId();
+  const newVarNameId = useId();
+  const newVarValId = useId();
 
   const {
     edges,
@@ -133,17 +137,19 @@ export function InspectorPanel({ selectedNode }: InspectorPanelProps) {
                 
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Node Title</label>
-                    <input 
-                      type="text" 
+                    <label htmlFor={labelId} className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Node Title</label>
+                    <input
+                      id={labelId}
+                      type="text"
                       value={data.label}
                       onChange={handleLabelChange}
                       className="w-full text-sm px-3 py-2 bg-white/5 border border-white/10 rounded-lg focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 outline-none transition-all text-gray-200 placeholder-gray-600"
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Developer Notes / Description</label>
-                    <textarea 
+                    <label htmlFor={descriptionId} className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Developer Notes / Description</label>
+                    <textarea
+                      id={descriptionId}
                       value={typeof data.description === 'string' ? data.description : ''}
                       onChange={handleDescChange}
                       className="w-full text-sm px-3 py-2 bg-white/5 border border-white/10 rounded-lg focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 outline-none resize-none h-24 transition-all text-gray-200 placeholder-gray-600"
@@ -208,27 +214,32 @@ export function InspectorPanel({ selectedNode }: InspectorPanelProps) {
                 </div>
               ) : (
                 <div className="space-y-4 p-3.5 bg-white/5 border border-white/10 rounded-xl">
-                  {Object.entries(data.config).map(([key, value]) => (
-                    <div key={key} className="space-y-1">
-                      <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wide">
-                        {key.replace(/([A-Z])/g, ' $1').trim()}
-                      </label>
-                      {typeof value === 'string' && value.length > 50 ? (
-                        <textarea 
-                          value={String(value)}
-                          onChange={e => handleConfigChange(key, e.target.value)}
-                          className="w-full text-xs p-2 bg-black/20 border border-white/10 rounded focus:bg-white/10 focus:border-indigo-500/50 outline-none transition-all h-28 font-sans text-gray-200 placeholder-gray-600"
-                        />
-                      ) : (
-                        <input 
-                          type="text" 
-                          value={String(value)}
-                          onChange={e => handleConfigChange(key, e.target.value)}
-                          className="w-full text-xs px-2.5 py-1.5 bg-black/20 border border-white/10 rounded focus:bg-white/10 focus:border-indigo-500/50 outline-none transition-all font-sans text-gray-200 placeholder-gray-600"
-                        />
-                      )}
-                    </div>
-                  ))}
+                  {Object.entries(data.config).map(([key, value]) => {
+                    const configFieldId = `config-${id}-${key}`;
+                    return (
+                      <div key={key} className="space-y-1">
+                        <label htmlFor={configFieldId} className="block text-[10px] font-bold text-gray-400 uppercase tracking-wide">
+                          {key.replace(/([A-Z])/g, ' $1').trim()}
+                        </label>
+                        {typeof value === 'string' && value.length > 50 ? (
+                          <textarea
+                            id={configFieldId}
+                            value={String(value)}
+                            onChange={e => handleConfigChange(key, e.target.value)}
+                            className="w-full text-xs p-2 bg-black/20 border border-white/10 rounded focus:bg-white/10 focus:border-indigo-500/50 outline-none transition-all h-28 font-sans text-gray-200 placeholder-gray-600"
+                          />
+                        ) : (
+                          <input
+                            id={configFieldId}
+                            type="text"
+                            value={String(value)}
+                            onChange={e => handleConfigChange(key, e.target.value)}
+                            className="w-full text-xs px-2.5 py-1.5 bg-black/20 border border-white/10 rounded focus:bg-white/10 focus:border-indigo-500/50 outline-none transition-all font-sans text-gray-200 placeholder-gray-600"
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </motion.div>
@@ -257,9 +268,10 @@ export function InspectorPanel({ selectedNode }: InspectorPanelProps) {
               {showAddVar && (
                 <form onSubmit={handleAddVariable} className="p-3 bg-white/5 border border-indigo-500/30 rounded-lg space-y-2">
                   <div>
-                    <label className="block text-[9px] font-bold text-indigo-400 uppercase">Variable Name</label>
-                    <input 
-                      type="text" 
+                    <label htmlFor={newVarNameId} className="block text-[9px] font-bold text-indigo-400 uppercase">Variable Name</label>
+                    <input
+                      id={newVarNameId}
+                      type="text"
                       placeholder="user_cpf"
                       value={newVarName}
                       onChange={e => setNewVarName(e.target.value)}
@@ -268,9 +280,10 @@ export function InspectorPanel({ selectedNode }: InspectorPanelProps) {
                     />
                   </div>
                   <div>
-                    <label className="block text-[9px] font-bold text-indigo-400 uppercase">Value</label>
-                    <input 
-                      type="text" 
+                    <label htmlFor={newVarValId} className="block text-[9px] font-bold text-indigo-400 uppercase">Value</label>
+                    <input
+                      id={newVarValId}
+                      type="text"
                       placeholder="12345678909"
                       value={newVarVal}
                       onChange={e => setNewVarVal(e.target.value)}

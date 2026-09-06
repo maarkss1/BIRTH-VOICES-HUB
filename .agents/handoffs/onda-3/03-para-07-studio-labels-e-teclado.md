@@ -1,7 +1,7 @@
 - De: Agente 03 (Design System e Acessibilidade)
 - Para: Agente 07 (Studio, Workflows e Colaboração)
 - Onda: 3
-- Status: aberto
+- Status: em-andamento
 - Prioridade: normal
 
 ## Problema
@@ -76,3 +76,80 @@ Nenhum destes itens é um bloqueador de release (achados de severidade moderada:
 utilizáveis com mouse/leitura visual, e o texto do placeholder ainda é lido por parte dos leitores
 de tela ao focar o campo, só não é robusto). Registrando como normal para não perder o achado da
 auditoria da Onda 3.
+
+## Resolução (Agente 07 — remediação Onda 3)
+
+### 1. Inputs sem `<label>` associado — resolvido
+Segui o mesmo padrão do design-system (`React.useId()` + `htmlFor`/`id`; `aria-label` só onde não
+havia `<label>` visível para não mudar layout):
+
+- `components/studio/panels/InspectorPanel.tsx`:
+  - "Node Title" e "Developer Notes / Description" agora usam `useId()` + `htmlFor`/`id`.
+  - Campos dinâmicos da aba Setup (`data.config`) agora usam `id={`config-${id}-${key}`}` (o `id`
+    do nó, não só a `key`, para garantir unicidade mesmo entre nós diferentes com a mesma chave de
+    config) + `htmlFor` correspondente no `<label>` já existente.
+  - "Variable Name" e "Value" (form de nova variável) agora usam `useId()` + `htmlFor`/`id`.
+- `components/studio/panels/BottomDrawer.tsx`:
+  - Inputs "key"/"value" do form de variável (Runtime Simulator) agora têm
+    `aria-label="Nome da variável de telemetria"` / `aria-label="Valor da variável de telemetria"`.
+  - Textarea do gerador de workflow via IA (aba Catarina AI Studio) agora tem
+    `aria-label="Prompt em linguagem natural para gerar workflow via IA"`.
+- `components/studio/panels/LayersPanel.tsx`:
+  - Campo de busca "Pesquisar nós ou tags..." agora tem `aria-label="Pesquisar nós ou tags"`.
+
+Teste esperado do handoff (`screen.getByLabelText(...)` resolvendo cada campo) está coberto por
+testes novos e colocados junto dos componentes (não em `__tests__/**`, que é propriedade exclusiva
+do Agente 08 — mesmo padrão de `components/design-system/index.test.tsx` e
+`components/LiveSupervisor/LiveSupervisor.test.tsx`):
+- `components/studio/panels/InspectorPanel.test.tsx` (5 testes)
+- `components/studio/panels/BottomDrawer.test.tsx` (2 testes)
+- `components/studio/panels/LayersPanel.test.tsx` (3 testes)
+
+Todos os 10 testes passam (`npm run test`), junto com o restante da suíte (343 passed, 1 skipped
+pré-existente).
+
+### 2. Comportamento de teclado do canvas (`@xyflow/react`) — parcialmente resolvido
+Confirmei o achado do Agente 03: `components/studio/Canvas.tsx` continua sem qualquer customização
+de teclado própria (`deleteKeyCode`, `multiSelectionKeyCode`, `onKeyDown`, `tabIndex`, etc. não
+aparecem no arquivo) — a navegação por teclado ali é inteiramente a nativa do `@xyflow/react`
+(mover um nó já selecionado com as setas funciona; tabular entre nós, abrir o `InspectorPanel` de
+um nó, ou navegar edges usando só teclado, não).
+
+Implementei a mitigação incremental sugerida pelo Agente 03, dentro do meu domínio exclusivo
+(`components/studio/panels/LayersPanel.tsx`, sem tocar `Canvas.tsx`):
+- Aba "Layers" do `LayersPanel`: cada nó do workflow agora é um `<button>` real (antes era um
+  `<div onClick>` sem `tabIndex`/suporte a teclado), com `aria-label` descritivo
+  (`Selecionar nó {label} e abrir no inspetor`), que chama o mesmo `setSelectedNodeId` que o
+  `Canvas.tsx` usa a partir da seleção no canvas — ou seja, é um caminho real e funcional, não uma
+  cópia paralela: Tab até o nó na lista + Enter/Space seleciona o nó e abre o `InspectorPanel`
+  exatamente como clicar nele no canvas faria.
+- Estendi a mesma correção às abas "Node Specs" (adicionar nó ao canvas) e "Templates" (carregar
+  workflow de exemplo) e "Favs" — todas eram `<div onClick>` sem suporte a teclado; agora usam
+  `<button>` (Node Specs/Favs mantiveram `div` com `role="button"`/`tabIndex`/`onKeyDown` porque têm
+  um botão de favoritar aninhado — `<button>` dentro de `<button>` é HTML inválido — mas Templates e
+  Layers, sem elemento interativo aninhado, viraram `<button>` de verdade).
+- Teste `LayersPanel.test.tsx` cobre exatamente o cenário pedido no handoff: foco via `Tab`
+  (`.focus()` + `toHaveFocus()`) num item da lista de nós, `Enter` seleciona o nó no store, e o
+  `InspectorPanel` (renderizado ao lado, como no `Canvas.tsx` real) passa a exibir os dados desse
+  nó — prova de que o caminho alternativo funciona de ponta a ponta, não é só marcação.
+
+**O que continua faltando (não implementado nesta remediação):** navegação por teclado *dentro do
+próprio canvas* do `@xyflow/react` — Tab nativo entre nós/edges/handles, atalhos de teclado
+customizados (`deleteKeyCode`, `multiSelectionKeyCode`), ou abrir o `InspectorPanel` a partir do
+foco de um nó no canvas sem passar pelo mouse ou pelo `LayersPanel`. Isso exigiria uma
+implementação bem maior (gerenciamento de foco custom sobre a lib `@xyflow/react`, possivelmente
+`onNodeClick`/keyboard handlers por nó, e revisão de como o `ReactFlow` já implementa seu próprio
+"keyboard preset" nativo) — desproporcional ao escopo desta remediação pontual e não é bloqueador
+de release, conforme o próprio handoff original já registrava. Fica como débito técnico conhecido:
+uma implementação completa de navegação por teclado nativa do canvas deve ser tratada como item de
+roadmap dedicado (handoff futuro para 07, ou revisão conjunta com 03 na próxima onda de
+acabamento), não "resolvida" por engano aqui.
+
+### Validação executada
+```
+npm run typecheck   # OK, 0 erros
+npm run lint        # OK, 0 erros (79 warnings pré-existentes de `any` em mocks de teste, fora do
+                     # escopo desta remediação — já catalogados em TECHNICAL-DEBT-CHECKLIST.html)
+npm run test        # OK, 343 passed | 1 skipped (54 arquivos passed, 1 skipped)
+npm run build       # OK, vite build + esbuild server.cjs concluídos sem erro
+```

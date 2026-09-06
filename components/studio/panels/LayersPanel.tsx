@@ -72,9 +72,10 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
       <div className="p-2 border-b border-white/5 bg-transparent shrink-0 space-y-2">
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-gray-500 absolute left-2.5 top-2.5" />
-          <input 
-            type="text" 
-            placeholder="Pesquisar nós ou tags..." 
+          <input
+            type="text"
+            placeholder="Pesquisar nós ou tags..."
+            aria-label="Pesquisar nós ou tags"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full text-xs pl-8 pr-2.5 py-2 bg-white/5 border border-white/10 rounded-lg outline-none focus:bg-white/10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-all placeholder-gray-500 text-gray-200"
@@ -155,10 +156,20 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
               {filteredRegistry.map((item) => {
                 const isItemFav = favorites.includes(item.type);
                 return (
-                  <div 
+                  <div
                     key={item.type}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Adicionar nó ${item.label} ao canvas`}
                     onClick={() => addNodeFromRegistry(item.type)}
-                    className="p-2.5 bg-white/5 border border-white/10 hover:border-indigo-500/50 rounded-xl cursor-pointer flex items-start gap-2.5 transition-all group hover:bg-white/10 hover:shadow-[0_0_15px_rgba(99,102,241,0.1)]"
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        addNodeFromRegistry(item.type);
+                      }
+                    }}
+                    className="p-2.5 bg-white/5 border border-white/10 hover:border-indigo-500/50 rounded-xl cursor-pointer flex items-start gap-2.5 transition-all group hover:bg-white/10 hover:shadow-[0_0_15px_rgba(99,102,241,0.1)] focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/50 focus-visible:border-indigo-500/50"
                   >
                     <div className="p-1.5 rounded-lg bg-black/20 group-hover:bg-indigo-500/20 text-gray-400 group-hover:text-indigo-400 transition-colors border border-white/5 group-hover:border-indigo-500/30">
                       {getIconForType(item.type)}
@@ -205,10 +216,20 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
                 const item = nodeRegistry[favType];
                 if (!item) return null;
                 return (
-                  <div 
+                  <div
                     key={favType}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Adicionar nó favorito ${item.label} ao canvas`}
                     onClick={() => addNodeFromRegistry(favType)}
-                    className="p-2 bg-amber-500/10 border border-amber-500/20 hover:border-amber-400/50 rounded-lg flex items-center justify-between cursor-pointer group transition-all"
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        addNodeFromRegistry(favType);
+                      }
+                    }}
+                    className="p-2 bg-amber-500/10 border border-amber-500/20 hover:border-amber-400/50 rounded-lg flex items-center justify-between cursor-pointer group transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/60"
                   >
                     <div className="flex items-center gap-2">
                       {getIconForType(favType)}
@@ -242,10 +263,12 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
             <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider px-1">Workflows de Sucesso</h3>
             <div className="space-y-1.5">
               {templates.map((tpl) => (
-                <div 
+                <button
                   key={tpl.id}
+                  type="button"
                   onClick={() => handleLoadTemplate(tpl)}
-                  className="p-2.5 bg-white/5 border border-white/10 hover:border-indigo-500/50 rounded-lg cursor-pointer transition-all hover:bg-white/10 hover:shadow-[0_0_15px_rgba(99,102,241,0.1)] group"
+                  aria-label={`Carregar workflow de exemplo ${tpl.name}`}
+                  className="w-full text-left p-2.5 bg-white/5 border border-white/10 hover:border-indigo-500/50 rounded-lg cursor-pointer transition-all hover:bg-white/10 hover:shadow-[0_0_15px_rgba(99,102,241,0.1)] group focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/50"
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-gray-200 group-hover:text-indigo-300 truncate transition-colors">
@@ -256,7 +279,7 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
                   <div className="text-[10px] text-gray-500 font-mono mt-1 font-semibold uppercase">
                     {tpl.nodes.length} Nodes • {tpl.edges.length} Edges
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -277,10 +300,12 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
                 {nodes.map(node => {
                   const state = nodeLifecycles[node.id] || 'Ready';
                   return (
-                    <div 
-                      key={node.id} 
+                    <button
+                      key={node.id}
+                      type="button"
                       onClick={() => setSelectedNodeId(node.id)}
-                      className="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-indigo-500/10 cursor-pointer group transition-colors"
+                      aria-label={`Selecionar nó ${node.data.label} e abrir no inspetor`}
+                      className="w-full flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-indigo-500/10 cursor-pointer group transition-colors text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/50"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         {getIconForType(node.type || '')}
@@ -291,7 +316,7 @@ export function LayersPanel({ nodes }: LayersPanelProps) {
                       <span className="text-[8px] font-mono font-semibold text-gray-500 group-hover:text-indigo-400 uppercase shrink-0 transition-colors">
                         {state}
                       </span>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
