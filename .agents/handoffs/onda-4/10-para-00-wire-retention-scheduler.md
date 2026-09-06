@@ -1,7 +1,7 @@
 - De: Agente 10 (Infraestrutura, Observabilidade e Deploy)
 - Para: Agente 00 (Coordenador) — `server.ts` exige aprovação explícita do Coordenador (AGENTS.md §11)
 - Onda: 4 (remediação de achado do Agente 05, roteada pelo Coordenador)
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -82,3 +82,12 @@ conexão Redis/registrar job durante a suíte de testes).
 - `npm run test`: 300 passed | 1 skipped (301 total) — inclui os 5 novos testes de
   `retentionScheduler.test.ts`.
 - `npm run build`: sucesso (`vite build` + `esbuild server.ts`), sem erros.
+
+## Resolução
+
+Wiring aplicado pelo Coordenador exatamente como sugerido: import de `startRetentionScheduler` no
+topo de `server.ts` (ao lado de `startWebhookWorker`) e chamada dentro do bloco
+`NODE_ENV !== 'test'`, antes de `server.listen(...)`. Gate completo (typecheck/lint/test/build)
+verde após a mudança. Handoff original de retenção
+(`.agents/handoffs/onda-1/05-para-00-callLog-retention-scheduling.md`) pode ser fechado por quem o
+revisar em seguida — o mecanismo está registrado e ativo no boot fora do ambiente de teste.

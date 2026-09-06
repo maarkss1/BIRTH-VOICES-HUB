@@ -1,7 +1,7 @@
 - De: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Para: Agente 00 (Coordenador) — para roteamento a quem for dono da execução periódica (provável Agente 10, Infraestrutura)
 - Onda: 1
-- Status: em-andamento
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -80,3 +80,9 @@ Implementei o mecanismo de disparo periódico dentro do meu domínio (não toque
 
 Status: mecanismo pronto e testado isoladamente; falta apenas o wiring em `server.ts`, que depende
 da aprovação/aplicação do Coordenador (Agente 00).
+
+### Wiring aplicado (Coordenador)
+
+`startRetentionScheduler()` chamado em `server.ts` ao lado de `startWebhookWorker()`, guardado pelo
+mesmo `NODE_ENV !== 'test'`. Fechado — ver `.agents/handoffs/onda-4/10-para-00-wire-retention-scheduler.md`
+para o detalhe do wiring.
