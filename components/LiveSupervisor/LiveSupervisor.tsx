@@ -55,14 +55,18 @@ interface LiveSupervisorProps {
   sessionId: string;
 }
 
-// RBAC for call intervention: the platform's RBAC model (see src/repositories/roleRepository.ts)
-// only issues 'admin' and 'user' system roles today — there is no dedicated 'supervisor' role
-// yet. Until one exists (see handoff 11-para-01-supervisor-role-rbac.md), 'admin' is used here as
-// the closest conservative proxy: it can only ever be narrower than "any authenticated user",
-// never broader. This check is UX/defense-in-depth only — the authoritative enforcement belongs
-// on the socket server (see handoff 11-para-00-socketio-tenant-rbac-audit.md) and must never be
-// trusted from the client alone.
-const ROLES_ALLOWED_TO_INTERVENE = ['admin'];
+// RBAC for call intervention: the platform now has a real `Permission` ('supervision:intervene')
+// grantable to any `Role`, and a dedicated 'supervisor' system role that receives it by default
+// alongside 'admin' (see handoff 01-para-11-supervisor-permission-frontend.md, resolving the
+// earlier 11-para-01-supervisor-role-rbac.md). The aligned fix would read `user.permissions` from
+// the session store instead of hardcoding role names, but that field isn't populated by
+// useSessionStore yet (owned by Agente 02 — see handoff 11-para-02-sessionuser-permissions.md).
+// Until then this hardcoded allowlist is kept as the minimal, no-regression fix: it must track
+// exactly which roles the server currently grants 'supervision:intervene' to. This check is
+// UX/defense-in-depth only — the authoritative enforcement belongs on the socket server (see
+// handoff 11-para-00-socketio-tenant-rbac-audit.md, resolved via 01-para-00-intervene-permission-
+// socketio.md) and must never be trusted from the client alone.
+const ROLES_ALLOWED_TO_INTERVENE = ['admin', 'supervisor'];
 
 export function LiveSupervisor({ sessionId }: LiveSupervisorProps) {
   const user = useSessionStore((s) => s.user);
@@ -161,8 +165,9 @@ export function LiveSupervisor({ sessionId }: LiveSupervisorProps) {
 
     socket.on('intervention_error', (data?: { message?: string }) => {
       // The client-side `canIntervene` gate is UX only — the server is the authoritative check
-      // (see server.ts, ROLES_ALLOWED_TO_INTERVENE). If it rejects the request, roll back the
-      // optimistic state instead of showing an intervention that never actually happened.
+      // (see server.ts, which enforces the 'supervision:intervene' permission via hasPermission()).
+      // If it rejects the request, roll back the optimistic state instead of showing an
+      // intervention that never actually happened.
       logger.warn('LiveSupervisor: intervenção rejeitada pelo servidor', { message: data?.message });
       setIntervention((prev) => (prev?.triggeredByMe ? null : prev));
     });

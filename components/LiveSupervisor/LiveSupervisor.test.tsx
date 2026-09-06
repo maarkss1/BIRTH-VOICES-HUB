@@ -52,6 +52,10 @@ function getMockSocket(): MockSocket {
 
 const SUPERVISOR_USER = { id: 'u1', email: 'supervisora@teste.com', role: 'admin', tenantId: 'tenant-1' };
 const AGENT_USER = { id: 'u2', email: 'agente@teste.com', role: 'user', tenantId: 'tenant-1' };
+// Dedicated 'supervisor' role (see handoff 01-para-11-supervisor-permission-frontend.md): holds
+// the 'supervision:intervene' permission on the server by default, same as 'admin', but must not
+// get full admin access. Only the client-side allowlist is exercised here.
+const DEDICATED_SUPERVISOR_USER = { id: 'u3', email: 'supervisor.dedicado@teste.com', role: 'supervisor', tenantId: 'tenant-1' };
 
 describe('LiveSupervisor', () => {
   beforeEach(() => {
@@ -171,6 +175,15 @@ describe('LiveSupervisor', () => {
     const interveneButton = screen.getByRole('button', { name: /intervir na chamada/i });
     expect(interveneButton).toBeDisabled();
     expect(screen.getByText(/Apenas supervisores podem intervir/)).toBeInTheDocument();
+  });
+
+  it('also allows the dedicated supervisor role to intervene, not just admin', () => {
+    useSessionStore.setState({ user: DEDICATED_SUPERVISOR_USER, sessionStatus: 'authenticated' });
+    render(<LiveSupervisor sessionId="sess-123" />);
+
+    const interveneButton = screen.getByRole('button', { name: /intervir na chamada/i });
+    expect(interveneButton).not.toBeDisabled();
+    expect(screen.queryByText(/Apenas supervisores podem intervir/)).not.toBeInTheDocument();
   });
 
   it('emits an audited intervention and disables further intervention once triggered', async () => {
