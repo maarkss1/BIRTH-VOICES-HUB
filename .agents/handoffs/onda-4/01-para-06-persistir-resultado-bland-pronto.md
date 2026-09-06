@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 06 (Integrações Externas)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -85,3 +85,54 @@ TypeScript (`prisma.atlasGRCallResult`) já está disponível para você importa
 Validações rodadas nesta onda por mim (saída real): `npm run typecheck` (0 erros), `npm run lint`
 (0 erros), `npm run test` (53 arquivos, 332 testes passando, 1 skip, 0 falhas), `npm run build`
 (build de produção completo), `npx prisma generate` (client gerado com sucesso).
+
+## Resolução
+
+Chamada real de `upsertAtlasGRCallResult` inserida no handler
+`router.post('/webhooks/bland/:token', ...)` em
+`src/features/prospecting/routes/atlasgr.routes.ts`, logo após o bloco de `forwardPayload` (que já
+extrai `call_id`/`status`/`completed`/`call_length`) e **antes** do `try { fetch(...) }` que
+encaminha o resultado ao AtlasGR — exatamente como sugerido, para não perder o dado de auditoria
+mesmo se o encaminhamento ao CRM falhar. A posição garante que:
+- a chamada só acontece depois de `validateBlandCallbackToken` (autenticação do callback) e depois
+  de `beginBlandCallbackProcessing` já ter retornado um estado diferente de `duplicate`/
+  `in_progress` (ambos retornam antes de chegar a este ponto) — nunca persiste um callback não
+  autenticado ou já processado/duplicado;
+- é **fire-and-forget com log**, não bloqueante: `upsertAtlasGRCallResult(...).catch((error) =>
+  logger.error(...))` — mesmo padrão de `src/services/audit.ts`
+  (`auditQueue.add(...).catch((err) => logger.error(...))`). Uma falha de persistência nunca
+  derruba nem atrasa a resposta HTTP ao Bland AI (o `fetch` de encaminhamento ao AtlasGR roda em
+  paralelo, sem `await` na persistência), e o erro nunca é escondido — sempre logado via `pino`
+  com `callId` e mensagem do erro.
+
+Campos passados: `callId`, `status: data.status ?? null`, `completed: forwardPayload.completed`,
+`callLength: forwardPayload.call_length || null`, `leadId: asString(variables.lead_id) || null` e
+`tenantId: process.env.ATLASGR_TENANT_ID?.trim() || null` (melhor esforço, conforme sugerido —
+documentado inline por que não é uma garantia verificável por chamada, remetendo ao comentário do
+model em `prisma/schema.prisma`).
+
+### Arquivos alterados
+- `src/features/prospecting/routes/atlasgr.routes.ts` — import de `upsertAtlasGRCallResult` e
+  chamada fire-and-forget-com-log no handler do callback da Bland AI.
+- `src/features/prospecting/routes/atlasgr.routes.test.ts` — mock de
+  `../../../repositories/atlasGRCallResultRepository.js` (evita hit real em Prisma nos testes de
+  rota) e 3 novos testes: (1) o resultado é persistido com os campos corretos ao processar um
+  callback válido; (2) `tenantId`/`leadId` são propagados quando `ATLASGR_TENANT_ID` está
+  configurado e `variables.lead_id` vem no payload; (3) uma falha na persistência não derruba a
+  resposta 200 ao Bland AI; (4) callback `duplicate` não chama `upsertAtlasGRCallResult`.
+- Nenhum arquivo fora do domínio do Agente 06 foi tocado (`prisma/schema.prisma` e
+  `src/repositories/atlasGRCallResultRepository.ts` permanecem exclusivamente do Agente 01, não
+  alterados).
+
+### Validações (saída real, nesta remediação)
+- `npm run typecheck` → 0 erros.
+- `npm run lint` → 0 erros, 92 warnings pré-existentes (`@typescript-eslint/no-explicit-any` em
+  mocks de teste já catalogados em `TECHNICAL-DEBT-CHECKLIST.html`); nenhum warning novo nos
+  arquivos alterados.
+- `npm run test` → 53 arquivos de teste passando, 335 testes passando (332 pré-existentes + 3 novos
+  neste handoff), 1 skip (pré-existente), 0 falhas.
+- `npm run test:contracts` → 1 arquivo, 1 teste passando (`contracts/health.contract.test.ts`).
+- `npm run build` → build de produção completo (`vite build` + bundle `esbuild` de `server.ts`),
+  sem erros.
+
+Status final: `resolvido`.
