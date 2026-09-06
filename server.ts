@@ -196,8 +196,25 @@ async function startServer() {
     next();
   });
 
+  // Room key for a watched call: scoped by tenant AND session, so a broadcast (intervention,
+  // future real telemetry) can never reach a socket outside the tenant/session it belongs to,
+  // even if two tenants happen to reuse the same sessionId. See handoff
+  // 11-para-00-socketio-tenant-rbac-audit.md (Agente 11 -> Coordenador) — this closes it.
+  const watchRoom = (tenantId: string, sessionId: string) => `watch:${tenantId}:${sessionId}`;
+
+  // Same conservative proxy the client (LiveSupervisor.tsx) uses until a dedicated 'supervisor'
+  // role exists (see handoff 11-para-01-supervisor-role-rbac.md, addressed to Agente 01) — kept
+  // in sync deliberately, and this is the authoritative check: the client-side gate is UX only.
+  const ROLES_ALLOWED_TO_INTERVENE = ['admin'];
+
   io.on("connection", (socket) => {
     logger.info('Supervisor connected via WebSocket', socket.id);
+
+    socket.on("watch_session", (data: { sessionId?: string }) => {
+      const sessionId = data?.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) return;
+      socket.join(watchRoom(socket.data.user.tenantId, sessionId));
+    });
 
     let demoInterval: NodeJS.Timeout | undefined;
     if (demoTelemetryEnabled) {
@@ -245,9 +262,28 @@ async function startServer() {
       }, 1000);
     }
 
-    socket.on("intervene_call", (data) => {
-      logger.info('Intervention received from supervisor', data);
-      io.emit("intervention_triggered", { message: "Supervisor interveio na chamada!" });
+    socket.on("intervene_call", (data: { sessionId?: string }) => {
+      const role = socket.data.user?.role;
+      if (!ROLES_ALLOWED_TO_INTERVENE.includes(role)) {
+        logger.warn('Intervention rejected: role not authorized', { role, userId: socket.data.user?.id });
+        socket.emit("intervention_error", { message: "Sem permissão para intervir nesta chamada." });
+        return;
+      }
+      const sessionId = data?.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) {
+        logger.warn('Intervention rejected: missing sessionId', { userId: socket.data.user?.id });
+        socket.emit("intervention_error", { message: "sessionId ausente na solicitação de intervenção." });
+        return;
+      }
+      const room = watchRoom(socket.data.user.tenantId, sessionId);
+      logger.info('Intervention received from supervisor', { sessionId, userId: socket.data.user?.id, tenantId: socket.data.user?.tenantId });
+      // Scoped to the tenant+session room, never io.emit — a global broadcast would leak this
+      // event to every connected socket across every tenant regardless of which call it concerns.
+      io.to(room).emit("intervention_triggered", {
+        sessionId,
+        by: socket.data.user?.email,
+        at: Date.now(),
+      });
     });
 
     socket.on("disconnect", () => {
