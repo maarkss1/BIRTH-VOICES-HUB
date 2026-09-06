@@ -1,7 +1,7 @@
 - De: Agente 11 (Supervisão em Tempo Real e Telemetria)
 - Para: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -34,3 +34,42 @@ produto for restringir também admins não-operacionais); `user` sem ele continu
 Não bloqueador — `admin` como proxy é estritamente mais restritivo que "qualquer autenticado",
 nunca mais permissivo, então não há vazamento de acesso enquanto isso não for resolvido. Fica
 para uma próxima execução do Agente 01, priorização de produto.
+
+## Resolução
+
+O model `Role`/`Permission` (many-to-many) já existia em `prisma/schema.prisma` — nenhuma
+migração foi necessária, apenas dados (Permission + wiring) e código de aplicação:
+
+- Nova `Permission` `supervision:intervene`, atribuível a qualquer `Role` (sistema ou
+  tenant-custom), em vez de mais um valor mágico de string. Ver
+  `src/repositories/roleRepository.ts` (`PERMISSIONS`, `SYSTEM_ROLE_DEFAULT_PERMISSIONS`).
+- Novo role de sistema `supervisor`, recebendo `supervision:intervene` por padrão — um tenant pode
+  agora promover um `user` a `supervisor` (via `PUT /api/users/:id { role: 'supervisor' }`) sem
+  conceder acesso total de `admin`.
+- `admin` também recebe `supervision:intervene` por padrão (superset, preserva o comportamento
+  anterior — nenhuma regressão). `prisma/seed.ts` faz backfill idempotente para roles `admin` já
+  existentes em bancos anteriores a esta mudança.
+- `src/middlewares/rbac.ts`: `hasPermission(user, permission)` (resolve ao vivo contra
+  Role/Permission, nunca confia em claim do JWT — revogação de permissão tem efeito imediato) e
+  `requirePermission(permission)` (middleware Express) para uso futuro em rotas HTTP.
+- `GET /api/auth/me` agora retorna `user.permissions: string[]` (calculado ao vivo) para uso do
+  cliente (UX only — a checagem autoritativa continua sendo `hasPermission`/`requirePermission`
+  no servidor).
+- Testes novos: `src/repositories/roleRepository.permissions.test.ts`,
+  `src/middlewares/rbac.permission.test.ts`. Validado manualmente ponta a ponta (registro →
+  `admin` tem a permissão; `user` não tem; promover `user` a `supervisor` concede exatamente
+  `supervision:intervene`, sem virar `admin`).
+
+`server.ts` (Socket.io, `ROLES_ALLOWED_TO_INTERVENE`) e
+`components/LiveSupervisor/LiveSupervisor.tsx` **não foram alterados** — ambos são de propriedade
+exclusiva de outros agentes (00 e 11 respectivamente) e o array hardcoded atual continua seguro
+(mais restritivo do que o novo modelo, nunca mais permissivo). Handoffs de consumo abertos:
+- `.agents/handoffs/onda-4/01-para-00-intervene-permission-socketio.md` (Agente 00 → `server.ts`)
+- `.agents/handoffs/onda-4/01-para-11-supervisor-permission-frontend.md` (Agente 11 →
+  `LiveSupervisor.tsx`)
+
+Decisão de produto em aberto (mencionada no pedido original): se `admin` deveria perder
+`supervision:intervene` por padrão (restringindo também admins não-operacionais). Optei por manter
+`admin` com a permissão para não introduzir regressão de acesso sem uma decisão explícita de
+produto — trivial de revogar depois (`prisma/seed.ts` ou uma migração de dados pontual
+desconectando a permissão do role `admin`).

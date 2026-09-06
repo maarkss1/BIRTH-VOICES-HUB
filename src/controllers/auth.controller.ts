@@ -9,6 +9,7 @@ const tokenSchema = z.object({
 import { register, login, refreshSession, AuthError } from '../services/authService.js';
 import { writeAuditLog } from '../services/audit.js';
 import { createMetric } from '../repositories/metricRepository.js';
+import { getPermissionsForRoleName } from '../repositories/roleRepository.js';
 import { setCookie, setLoggedInCookie, ACCESS_TOKEN_MAX_AGE_MS, REFRESH_TOKEN_MAX_AGE_MS } from '../lib/cookies.js';
 
 export async function registerHandler(req: Request, res: Response) {
@@ -91,6 +92,13 @@ export async function logoutHandler(req: Request, res: Response) {
   res.json({ success: true, message: 'Logout realizado com sucesso' });
 }
 
+// Also resolves the caller's effective Permission set live (never trusted from the JWT claim) so
+// the frontend can decide what to show (e.g. the LiveSupervisor "intervene" control) without a
+// hardcoded role-name allowlist. This is UX-only information for the client — every
+// permission-gated action must still be enforced authoritatively server-side (requirePermission /
+// hasPermission in src/middlewares/rbac.ts), never trusted from this response alone.
 export async function meHandler(req: Request, res: Response) {
-  res.json({ user: req.user });
+  if (!req.user) return res.json({ user: null });
+  const permissions = await getPermissionsForRoleName(req.user.role, req.user.tenantId);
+  res.json({ user: { ...req.user, permissions } });
 }
