@@ -50,12 +50,16 @@ function getMockSocket(): MockSocket {
   return socket;
 }
 
-const SUPERVISOR_USER = { id: 'u1', email: 'supervisora@teste.com', role: 'admin', tenantId: 'tenant-1' };
-const AGENT_USER = { id: 'u2', email: 'agente@teste.com', role: 'user', tenantId: 'tenant-1' };
+const SUPERVISOR_USER = { id: 'u1', email: 'supervisora@teste.com', role: 'admin', tenantId: 'tenant-1', permissions: ['supervision:intervene'] };
+const AGENT_USER = { id: 'u2', email: 'agente@teste.com', role: 'user', tenantId: 'tenant-1', permissions: [] };
 // Dedicated 'supervisor' role (see handoff 01-para-11-supervisor-permission-frontend.md): holds
 // the 'supervision:intervene' permission on the server by default, same as 'admin', but must not
-// get full admin access. Only the client-side allowlist is exercised here.
-const DEDICATED_SUPERVISOR_USER = { id: 'u3', email: 'supervisor.dedicado@teste.com', role: 'supervisor', tenantId: 'tenant-1' };
+// get full admin access. `canIntervene` is driven purely by `user.permissions` now (see handoff
+// 02-para-11-permissions-disponivel-no-sessionstore.md) — the role name itself is irrelevant here.
+const DEDICATED_SUPERVISOR_USER = { id: 'u3', email: 'supervisor.dedicado@teste.com', role: 'supervisor', tenantId: 'tenant-1', permissions: ['supervision:intervene'] };
+// A user whose role is outside the old hardcoded allowlist entirely, but who was granted the
+// permission directly — proves `canIntervene` no longer depends on role name at all.
+const CUSTOM_ROLE_WITH_PERMISSION_USER = { id: 'u4', email: 'custom.permissao@teste.com', role: 'qa-lead', tenantId: 'tenant-1', permissions: ['supervision:intervene'] };
 
 describe('LiveSupervisor', () => {
   beforeEach(() => {
@@ -168,7 +172,7 @@ describe('LiveSupervisor', () => {
     expect(screen.getByText('WS OFFLINE')).toBeInTheDocument();
   });
 
-  it('only allows a supervisor role to intervene, and disables the control for others', () => {
+  it('disables the control for a user lacking the supervision:intervene permission', () => {
     useSessionStore.setState({ user: AGENT_USER, sessionStatus: 'authenticated' });
     render(<LiveSupervisor sessionId="sess-123" />);
 
@@ -184,6 +188,27 @@ describe('LiveSupervisor', () => {
     const interveneButton = screen.getByRole('button', { name: /intervir na chamada/i });
     expect(interveneButton).not.toBeDisabled();
     expect(screen.queryByText(/Apenas supervisores podem intervir/)).not.toBeInTheDocument();
+  });
+
+  it('allows intervention based on user.permissions alone, regardless of role name', () => {
+    useSessionStore.setState({ user: CUSTOM_ROLE_WITH_PERMISSION_USER, sessionStatus: 'authenticated' });
+    render(<LiveSupervisor sessionId="sess-123" />);
+
+    const interveneButton = screen.getByRole('button', { name: /intervir na chamada/i });
+    expect(interveneButton).not.toBeDisabled();
+    expect(screen.queryByText(/Apenas supervisores podem intervir/)).not.toBeInTheDocument();
+  });
+
+  it('disables the control when permissions is present but missing supervision:intervene', () => {
+    useSessionStore.setState({
+      user: { ...AGENT_USER, role: 'admin', permissions: ['some:other-permission'] },
+      sessionStatus: 'authenticated',
+    });
+    render(<LiveSupervisor sessionId="sess-123" />);
+
+    const interveneButton = screen.getByRole('button', { name: /intervir na chamada/i });
+    expect(interveneButton).toBeDisabled();
+    expect(screen.getByText(/Apenas supervisores podem intervir/)).toBeInTheDocument();
   });
 
   it('emits an audited intervention and disables further intervention once triggered', async () => {

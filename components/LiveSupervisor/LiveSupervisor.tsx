@@ -55,22 +55,18 @@ interface LiveSupervisorProps {
   sessionId: string;
 }
 
-// RBAC for call intervention: the platform now has a real `Permission` ('supervision:intervene')
-// grantable to any `Role`, and a dedicated 'supervisor' system role that receives it by default
-// alongside 'admin' (see handoff 01-para-11-supervisor-permission-frontend.md, resolving the
-// earlier 11-para-01-supervisor-role-rbac.md). The aligned fix would read `user.permissions` from
-// the session store instead of hardcoding role names, but that field isn't populated by
-// useSessionStore yet (owned by Agente 02 — see handoff 11-para-02-sessionuser-permissions.md).
-// Until then this hardcoded allowlist is kept as the minimal, no-regression fix: it must track
-// exactly which roles the server currently grants 'supervision:intervene' to. This check is
+// RBAC for call intervention: the platform has a real `Permission` ('supervision:intervene')
+// grantable to any `Role` (the 'supervisor' and 'admin' system roles receive it by default — see
+// handoff 01-para-11-supervisor-permission-frontend.md). `useSessionStore` now populates
+// `user.permissions` live from `GET /api/auth/me` (see handoff
+// 02-para-11-permissions-disponivel-no-sessionstore.md), so this reads the real permission instead
+// of hardcoding role names — no magic role strings to keep in sync with the server. This check is
 // UX/defense-in-depth only — the authoritative enforcement belongs on the socket server (see
 // handoff 11-para-00-socketio-tenant-rbac-audit.md, resolved via 01-para-00-intervene-permission-
 // socketio.md) and must never be trusted from the client alone.
-const ROLES_ALLOWED_TO_INTERVENE = ['admin', 'supervisor'];
-
 export function LiveSupervisor({ sessionId }: LiveSupervisorProps) {
   const user = useSessionStore((s) => s.user);
-  const canIntervene = !!user && ROLES_ALLOWED_TO_INTERVENE.includes(user.role);
+  const canIntervene = !!user && !!user.permissions?.includes('supervision:intervene');
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
