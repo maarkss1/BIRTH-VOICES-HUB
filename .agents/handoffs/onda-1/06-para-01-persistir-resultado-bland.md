@@ -1,7 +1,7 @@
 - De: Agente 06 (Integrações Externas)
 - Para: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Onda: 1
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -70,3 +70,47 @@ mesmo `callId` (redelivery do callback) não duplica registro (constraint `@uniq
 
 Ver também `.agents/handoffs/onda-1/06-para-00-csrf-bloqueia-webhooks-servidor-servidor.md` — a
 rota do callback está sujeita ao mesmo problema de roteamento/CSRF descrito ali.
+
+## Resolução
+
+Modelo `AtlasGRCallResult` criado em `prisma/schema.prisma` (migração real aplicada:
+`prisma/migrations/20260906153010_add_atlasgr_call_result/migration.sql`) e repository em
+`src/repositories/atlasGRCallResultRepository.ts` (com testes em
+`src/repositories/atlasGRCallResultRepository.test.ts`).
+
+Decisão de modelagem sobre `tenantId` (a questão de produto que este handoff levantou): mantido
+**opcional** (`String?`, relação `Tenant?` com `onDelete: SetNull`), não obrigatório e não
+preenchido automaticamente com uma associação inventada. Motivo: embora
+`VoiceProspectingService.triggerOutboundCall` (seu arquivo,
+`src/features/prospecting/services/voice.service.ts`) já resolva um tenant real via
+`ATLASGR_TENANT_ID` para checar o consentimento de IA no disparo da ligação, esse identificador (a)
+nunca é enviado à Bland AI como metadata da chamada e (b) nunca volta no payload do callback de
+resultado — o callback só carrega `call_id`/`status`/transcript/etc, nada tenant-scoped. Preencher
+`tenantId` sempre com o valor atual de `ATLASGR_TENANT_ID` no momento do callback seria uma
+associação não-verificável (o env var pode ter sido rotacionado entre o disparo e o retorno, e não
+há como confirmar a partir do callback em si) — por isso optei por deixar o campo nulo por padrão e
+documentei isso extensamente no comentário do model em `prisma/schema.prisma`. O campo existe e
+está pronto para receber um valor real assim que houver um sinal de tenant verificável por chamada
+(ex.: AtlasGR passar a mandar um identificador estável que a Bland AI ecoe de volta no callback).
+
+Repository exposto (todos idempotentes/tenant-scoped conforme AGENTS.md §15):
+- `upsertAtlasGRCallResult(input)` — upsert por `callId` (constraint `@unique`), então uma
+  redelivery do mesmo `callId` (inclusive após o TTL da idempotência Redis expirar) atualiza a
+  linha existente em vez de duplicar ou lançar erro de constraint. Aceita `tenantId` opcional — você
+  decide, no handler, se quer passar `process.env.ATLASGR_TENANT_ID` como melhor esforço.
+- `findAtlasGRCallResultByCallId(callId)`.
+- `listAtlasGRCallResultsForTenant(tenantId, { page, pageSize })` — leitura paginada por tenant,
+  para uma futura tela de "quantas ligações a AtlasGR disparou e qual foi o resultado de cada uma".
+
+Não editei `src/features/prospecting/routes/atlasgr.routes.ts` (seu arquivo) — falta apenas você
+chamar `upsertAtlasGRCallResult` no handler `POST /webhooks/bland/:token`, dentro do bloco que já
+processa o resultado (depois de `beginBlandCallbackProcessing` retornar algo diferente de
+`duplicate`/`in_progress`, e usando os mesmos campos que você já extrai em `forwardPayload`
+— `call_id`, `status`, `completed`, `call_length`). Ver handoff
+`.agents/handoffs/onda-4/01-para-06-persistir-resultado-bland-pronto.md`.
+
+Validações rodadas nesta resolução (saída real, não simulada): `npm run typecheck` (0 erros),
+`npm run lint` (0 erros, só warnings pré-existentes de `no-explicit-any` em arquivos de teste que já
+existiam antes desta mudança), `npm run test` (53 arquivos de teste, 332 testes passando, 1 skip,
+0 falhas), `npm run build` (build de produção completo, sem erro), `npx prisma generate` (client
+gerado com sucesso).
