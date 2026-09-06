@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 11 (Supervisão em Tempo Real e Telemetria)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -54,3 +54,42 @@ Duas opções, dependendo do que preferir:
 ## Contexto adicional
 Não bloqueador — o gate atual (`admin`-only) é estritamente mais restritivo que o necessário,
 nunca mais permissivo, então não há vazamento de acesso enquanto isso não for resolvido.
+
+## Resolução
+Apliquei a opção **mínima** descrita acima em `components/LiveSupervisor/LiveSupervisor.tsx`:
+
+```ts
+const ROLES_ALLOWED_TO_INTERVENE = ['admin', 'supervisor'];
+```
+
+Motivo de não ter ido direto para a opção alinhada (`user.permissions`): ela depende de
+`store/useSessionStore.ts` (propriedade do Agente 02) expor `permissions?: string[]` em
+`SessionUser`, populado a partir de `GET /api/auth/me`. O Agente 02 está ocupado em outra missão
+agora e essa dependência não pode ser resolvida sem esperar ou sem invadir um arquivo fora da
+minha propriedade exclusiva (`AGENTS.md` §11). Como a opção mínima funciona sem regressão — é
+estritamente uma extensão do array existente, mesmo padrão de código já presente no arquivo — e
+não há vazamento de acesso em nenhum dos dois casos (o servidor continua sendo a checagem
+autoritativa via `hasPermission()`), apliquei-a agora e deixei a evolução registrada em
+`.agents/handoffs/onda-4/11-para-02-sessionuser-permissions.md` para o Agente 02 pegar quando
+tiver janela.
+
+Também atualizei o comentário acima da constante (estava desatualizado, ainda descrevendo `admin`
+como "proxy" na ausência de um role dedicado) e o comentário em `intervention_error` que ainda
+citava `server.ts, ROLES_ALLOWED_TO_INTERVENE` como a checagem do servidor — a checagem real hoje é
+`hasPermission()` sobre a permissão `supervision:intervene` (aplicada pelo Coordenador em
+`server.ts`, handoff `01-para-00-intervene-permission-socketio.md`).
+
+Adicionei um teste de regressão em `LiveSupervisor.test.tsx` (`'also allows the dedicated
+supervisor role to intervene, not just admin'`) cobrindo o novo role.
+
+Validações executadas neste worktree (branch `agente/11-remediacao-onda4`):
+- `npm run typecheck` — OK, sem erros.
+- `npm run lint` — 0 erros, 86 warnings pré-existentes (`no-explicit-any` em arquivos de teste/
+  serviços fora do meu escopo); `npx eslint components/LiveSupervisor/` isolado — 0 problemas.
+- `npm run test` — 52 arquivos passaram, 1 skip (pré-existente, não relacionado); 326 testes
+  passaram, 1 skip; inclui os 11 testes de `LiveSupervisor.test.tsx` (10 pré-existentes + 1 novo).
+- `npm run build` — build de produção (`vite build` + bundle do `server.ts`) concluído com sucesso.
+
+Arquivos alterados: `components/LiveSupervisor/LiveSupervisor.tsx`,
+`components/LiveSupervisor/LiveSupervisor.test.tsx` (ambos dentro da minha propriedade exclusiva).
+Nenhum arquivo fora de `components/LiveSupervisor/**` foi tocado.
