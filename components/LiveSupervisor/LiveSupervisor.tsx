@@ -81,6 +81,11 @@ export function LiveSupervisor({ sessionId }: LiveSupervisorProps) {
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
   const [intervention, setIntervention] = useState<InterventionState | null>(null);
   const [criticalAnnouncement, setCriticalAnnouncement] = useState<string>('');
+  // Non-critical (info/warning) alerts also need to reach assistive tech — see
+  // .agents/handoffs/onda-3/03-para-11-livesupervisor-aria-live.md. They get their own "polite"
+  // region so they never interrupt in-progress reading the way the critical "assertive" region
+  // intentionally does.
+  const [politeAnnouncement, setPoliteAnnouncement] = useState<string>('');
 
   const announcedAlertIds = useRef<Set<string>>(new Set());
   const hasConnectedOnceRef = useRef(false);
@@ -167,14 +172,29 @@ export function LiveSupervisor({ sessionId }: LiveSupervisorProps) {
     };
   }, [sessionId]);
 
-  // Critical alerts must be announceable to assistive tech, not just a color change on the
-  // visual log. A dedicated aria-live region is updated only when a *new* critical alert arrives
-  // (tracked by id) so screen readers announce one concise message instead of the whole list.
+  // Every alert must be announceable to assistive tech, not just a color change on the visual
+  // log — see .agents/handoffs/onda-3/03-para-11-livesupervisor-aria-live.md. Each alert is
+  // announced exactly once (tracked by id in announcedAlertIds) through whichever single region
+  // matches its level, so screen readers hear one concise message per new alert instead of the
+  // whole list re-reading itself on every update:
+  //  - 'critical' -> the existing assertive/role="alert" region (interrupts, as it should).
+  //  - 'warning'/'info' -> a separate polite/role="status" region (waits its turn).
   useEffect(() => {
-    const newCritical = alerts.find((a) => a.level === 'critical' && !announcedAlertIds.current.has(a.id));
-    if (newCritical) {
-      announcedAlertIds.current.add(newCritical.id);
-      setCriticalAnnouncement(`Alerta crítico: ${newCritical.message}`);
+    const newAlerts = alerts.filter((a) => !announcedAlertIds.current.has(a.id));
+    if (newAlerts.length === 0) return;
+    newAlerts.forEach((a) => announcedAlertIds.current.add(a.id));
+
+    const newCritical = newAlerts.filter((a) => a.level === 'critical');
+    if (newCritical.length > 0) {
+      const latest = newCritical[newCritical.length - 1];
+      setCriticalAnnouncement(`Alerta crítico: ${latest.message}`);
+    }
+
+    const newNonCritical = newAlerts.filter((a) => a.level !== 'critical');
+    if (newNonCritical.length > 0) {
+      const latest = newNonCritical[newNonCritical.length - 1];
+      const levelLabel = latest.level === 'warning' ? 'Aviso' : 'Informação';
+      setPoliteAnnouncement(`${levelLabel}: ${latest.message}`);
     }
   }, [alerts]);
 
@@ -200,6 +220,11 @@ export function LiveSupervisor({ sessionId }: LiveSupervisorProps) {
       {/* Screen-reader-only live region: announces new critical alerts immediately. */}
       <div className="sr-only" role="alert" aria-live="assertive">
         {criticalAnnouncement}
+      </div>
+      {/* Screen-reader-only live region: announces new non-critical (info/warning) alerts
+          without interrupting whatever the user is currently reading. */}
+      <div className="sr-only" role="status" aria-live="polite">
+        {politeAnnouncement}
       </div>
 
       <div className="p-4 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between flex-wrap gap-3">
