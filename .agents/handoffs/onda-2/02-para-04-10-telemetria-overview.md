@@ -1,7 +1,7 @@
 - De: Agente 02 (Produto, Navegação e UX)
 - Para: Agente 04 (Voice Runtime e Gateway de IA) e Agente 10 (Infraestrutura, Observabilidade e Deploy)
 - Onda: 2
-- Status: aberto
+- Status: em-andamento
 - Prioridade: normal
 
 ## Problema
@@ -48,3 +48,23 @@ um endpoint real, nunca hardcoded.
 ## Contexto adicional
 Não bloqueador para esta onda — a tela antes mentia sobre ter esses dados; agora está honesta
 sobre a ausência deles.
+
+## Resolução
+
+Onda 4 (remediação, Agente 04, branch `agente/04-remediacao-telemetria`): a parte de **custo de
+IA, tokens e latência** desta pendência está resolvida do lado do Voice Runtime.
+`lib/voice-runtime/providers/LLMGateway.ts` agora persiste, tenant-scoped, um evento real de
+`ai_call_cost_usd`, `ai_call_tokens` e `ai_call_latency_ms` no `Metric` (Prisma) a cada chamada que
+efetivamente atingiu um provedor de IA com sucesso — nunca fabricado, nunca gravado para chamada
+bloqueada por consentimento ou para tentativa em que todos os provedores falharam. `GET
+/api/metrics` já retorna esses eventos (mesclados com os do usuário autenticado, já que são
+tenant-wide) sem precisar de endpoint novo. Detalhe completo, exemplo de shape de dado e teste
+esperado em
+`.agents/handoffs/onda-4/04-para-02-telemetria-custo-ia-disponivel.md` — é o handoff que o Agente
+02 deve seguir para trocar o `Alert` de `Overview.tsx` por cards reais de custo/tokens/latência.
+
+**CSAT e SLA continuam sem fonte real** — fora do domínio do Voice Runtime (CSAT é dado de produto/
+pesquisa pós-atendimento; SLA é uptime/infra, domínio do Agente 10) e sem pipeline de coleta
+definido em nenhum lugar do repositório hoje. Não fabriquei esses dois; ficam como pendência restante
+desta issue, a ser endereçada por uma decisão de produto (Coordenador/roadmap) antes de qualquer
+agente instrumentar uma fonte real.

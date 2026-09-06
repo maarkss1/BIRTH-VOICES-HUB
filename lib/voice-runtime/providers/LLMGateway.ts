@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { otelCollector, SYSTEM_TENANT_ID } from "../otel";
 import { getAiConsent } from "../../../src/services/settingService.js";
+import { createMetric } from "../../../src/services/metricService.js";
+import { logger } from "../../../src/lib/logger.js";
 
 export interface GatewayResponse {
   text: string;
@@ -52,6 +54,28 @@ class LLMProviderGateway {
     if (tenantId === SYSTEM_TENANT_ID) return true;
     const consent = await getAiConsent(tenantId);
     return consent.granted;
+  }
+
+  // Fire-and-forget, tenant-scoped persistence of a single real provider call. Never allowed to
+  // throw into the voice/call critical path — a metrics write failure must not break a real
+  // conversation. `userId` is null: an AI provider call is attributed to the tenant/session, not
+  // to a single interactive user (see metricRepository.createMetric).
+  private recordProviderCallMetrics(
+    tenantId: string,
+    provider: ProviderName | 'NONE',
+    tokensUsed: number,
+    costUSD: number,
+    latencyMs: number,
+    fromFallback: boolean,
+  ): void {
+    const tags = { provider, fromFallback };
+    Promise.all([
+      createMetric(tenantId, null, { name: 'ai_call_cost_usd', value: costUSD, tags }),
+      createMetric(tenantId, null, { name: 'ai_call_tokens', value: tokensUsed, tags }),
+      createMetric(tenantId, null, { name: 'ai_call_latency_ms', value: latencyMs, tags }),
+    ]).catch((err: unknown) => {
+      logger.error('[LLMProviderGateway] Failed to persist AI call metrics', err);
+    });
   }
 
   public async processRequest(
@@ -240,6 +264,17 @@ class LLMProviderGateway {
 
     otelCollector.recordLocalMetric('llm_cost', costUSD, { provider: providerUsed }, tenantId);
     otelCollector.recordLocalMetric('llm_tokens', tokensUsed, { provider: providerUsed }, tenantId);
+
+    // Persist real cost/tokens/latency in the durable Metric table (tenant-scoped) so dashboards
+    // (e.g. pages/Dashboard/Overview.tsx) can query real historical AI usage instead of only the
+    // in-memory/capped otelCollector data above. Only recorded when an actual provider call
+    // succeeded — tokensUsed/costUSD before that point are our own pre-call estimates, and
+    // AGENTS.md §14 forbids fabricating cost/telemetry numbers. SYSTEM_TENANT_ID has no row in
+    // the Tenant table (see otel.ts), so it is excluded to avoid a foreign-key failure and
+    // because there is no real tenant to scope a billing/usage metric to.
+    if (successfulProvider && tenantId !== SYSTEM_TENANT_ID) {
+      this.recordProviderCallMetrics(tenantId, providerUsed, tokensUsed, costUSD, latencyMs, isFallback);
+    }
 
     return {
       text,
