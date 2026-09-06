@@ -1,9 +1,9 @@
 {
   "uid": "otel-pipeline-health",
   "title": "OTel Pipeline Health",
-  "description": "Real signal from the otel-collector's own internal telemetry (Prometheus job otel-collector-internal, port 8888) plus live trace search against Tempo. This reflects what is actually flowing end-to-end today: server.ts/lib/otelInitializer.ts exports traces via OTLP on every request. The 'App Metrics (OTLP)' and 'Application Logs' rows stay empty until the app registers OTel metric/log exporters (see .agents/handoffs/onda-4/10-para-04-otel-metrics-logs-nao-exportados.md) — shown honestly as no-data rather than any fabricated number, per AGENTS.md §14.",
+  "description": "Real signal from the otel-collector's own internal telemetry (Prometheus job otel-collector-internal, port 8888) plus live trace search against Tempo. server.ts/lib/otelInitializer.ts exports traces via OTLP on every request — confirmed flowing end-to-end historically. As of .agents/handoffs/onda-4/0c9eff7 (Agente 04), lib/otelInitializer.ts also registers a real metricReader (PeriodicExportingMetricReader/OTLPMetricExporter) and logRecordProcessor (BatchLogRecordProcessor/OTLPLogExporter) pointed at the same collector endpoint, and infrastructure/observability/otel-collector.yml already has receivers+pipelines wired for metrics (-> prometheus exporter, port 9464) and logs (-> otlphttp/loki) — reviewed and confirmed by Agente 10 in .agents/handoffs/onda-4/04-para-10-dashboard-metrics-logs-reais.md. That review could NOT bring up docker-compose.opensource.yml in this environment (Docker Hub/quay.io/GitHub image and binary pulls are blocked by egress policy — 403 on every registry tried, not a transient failure) to confirm data actually lands in Prometheus/Loki, so the 'App Metrics (OTLP)' and 'Application Logs' panels below are NOT yet marked as carrying live data — per AGENTS.md §14/§17 this is reported as an unresolved environment limitation, not a false 'active' claim.",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "timezone": "browser",
   "time": { "from": "now-1h", "to": "now" },
@@ -151,7 +151,7 @@
     {
       "id": 300,
       "type": "row",
-      "title": "App Metrics (OTLP) — pending instrumentation, see handoff",
+      "title": "App Metrics (OTLP) — instrumented in code, live data not yet confirmed in this environment",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
       "collapsed": false
     },
@@ -159,7 +159,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "Custom app metrics forwarded via otel-collector's prometheus exporter (port 9464)",
-      "description": "Any metric the app exports over OTLP would surface here automatically (no dashboard change needed) once lib/otelInitializer.ts registers a MeterProvider with a metric exporter — today it only exports traces, so this panel legitimately shows no data rather than a fabricated number.",
+      "description": "lib/otelInitializer.ts now registers a real metricReader (PeriodicExportingMetricReader + OTLPMetricExporter, 10s interval) instead of a no-op MeterProvider, and otel-collector.yml's metrics pipeline (receivers: [otlp], exporters: [prometheus]) is already wired to receive it — see .agents/handoffs/onda-4/04-para-10-dashboard-metrics-logs-reais.md. This panel will surface real series automatically the first time the app runs against a real otel-collector with traffic flowing; it still shows no data here because this environment could not pull the otel-collector/Prometheus images (Docker Hub and quay.io both return 403 under this session's egress policy) to run docker-compose.opensource.yml and prove the metric actually lands in Prometheus. No fabricated number is shown per AGENTS.md §14.",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
@@ -175,7 +175,7 @@
     {
       "id": 400,
       "type": "row",
-      "title": "Application Logs (Loki) — pending instrumentation, see handoff",
+      "title": "Application Logs (Loki) — instrumented in code, live data not yet confirmed in this environment",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
       "collapsed": false
     },
@@ -183,7 +183,7 @@
       "id": 8,
       "type": "logs",
       "title": "Logs forwarded via otel-collector's logs pipeline (OTLP -> Loki)",
-      "description": "Would show pino (src/lib/logger.ts) output once the app exports logs via an OTel LoggerProvider — not wired today (see handoff), so this legitimately shows no data.",
+      "description": "src/lib/logger.ts now bridges pino output into the OTel Logs API, and lib/otelInitializer.ts registers a real logRecordProcessor (BatchLogRecordProcessor + OTLPLogExporter) that turns that bridge from a no-op into a live OTLP export; otel-collector.yml's logs pipeline (receivers: [otlp], exporters: [otlphttp/loki]) is already wired to receive it — see .agents/handoffs/onda-4/04-para-10-dashboard-metrics-logs-reais.md. This panel will surface real log lines automatically once the app runs against a real otel-collector/Loki. It still shows no data here because this environment could not pull the otel-collector/Loki images (Docker Hub and quay.io both return 403 under this session's egress policy) to run docker-compose.opensource.yml and confirm log records actually land in Loki. No fabricated log line is shown per AGENTS.md §14.",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 34 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
