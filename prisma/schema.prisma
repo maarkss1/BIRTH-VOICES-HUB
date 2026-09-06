@@ -26,6 +26,7 @@ model Tenant {
   auditLogs     AuditLog[]
   settings      Setting[]
   aiConsent     TenantAiConsent?
+  atlasGRCallResults AtlasGRCallResult[]
 }
 
 model User {
@@ -247,6 +248,43 @@ model TenantAiConsent {
 // the first cross-tenant report. Flagged by Agent 01 (schema owner) during the Onda 1 tenancy
 // audit; not fixed preemptively here because the correct shape (nullable vs required, one row per
 // tenant vs many) depends on product decisions those agents haven't made yet.
+// Persists the result callback Bland AI posts back once a call dispatched via the AtlasGR
+// prospecting integration finishes (`POST /api/webhooks/bland/:token`,
+// src/features/prospecting/routes/atlasgr.routes.ts — Agente 06's domain). Before this model the
+// handler only logged `callId`/`status` via `logger.info`; there was no durable, queryable record
+// answering "how many calls did AtlasGR trigger this period and what was each one's outcome".
+// Resolves .agents/handoffs/onda-1/06-para-01-persistir-resultado-bland.md.
+//
+// `tenantId` decision (product question raised in that handoff, decided pragmatically by Agente
+// 01): this integration is NOT multi-tenant today.
+// `VoiceProspectingService.triggerOutboundCall` (Agente 06,
+// src/features/prospecting/services/voice.service.ts) already maps every outbound call to exactly
+// one tenant via the `ATLASGR_TENANT_ID` env var, but that identifier is (a) never sent to Bland AI
+// as call metadata and (b) never present in Bland's result callback payload — the callback body only
+// carries `call_id`/`status`/transcript/etc, nothing tenant-scoped. Defaulting every row to whatever
+// `ATLASGR_TENANT_ID` happens to resolve to *at callback time* would be a fabricated association: it
+// could silently misattribute a result if that env var is ever rotated between the outbound call and
+// the inbound callback, and there is no signal in the callback itself to verify it. Rather than
+// invent that link, `tenantId` is OPTIONAL — a null value accurately reflects "this integration has
+// no verifiable per-call tenant signal today", not a bug. The caller persisting a row MAY still pass
+// `process.env.ATLASGR_TENANT_ID` as a best-effort label when present; that is a caller-side choice,
+// not something this model requires. Revisit once AtlasGR sends a stable tenant/account identifier
+// that round-trips through Bland's webhook (e.g. via `request_data`/`metadata` on the outbound call).
+model AtlasGRCallResult {
+  id         String    @id @default(uuid())
+  tenantId   String?
+  tenant     Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  leadId     String?
+  callId     String    @unique
+  status     String?
+  completed  Boolean?
+  callLength Float?
+  receivedAt DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([leadId])
+}
+
 model APIKey {
   id        String   @id @default(uuid())
   keyHash   String   @unique
