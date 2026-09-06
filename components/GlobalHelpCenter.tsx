@@ -135,14 +135,14 @@ export function GlobalHelpCenter() {
       {/* Floating Sparkly Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 p-3 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-full shadow-2xl hover:scale-105 active:scale-95 transition-all border border-slate-850 dark:border-slate-100 cursor-pointer"
-        style={{ backgroundColor: 'var(--brand-color)' }}
+        className="flex items-center gap-2 p-3 rounded-full shadow-2xl hover:scale-105 active:scale-95 transition-all border border-slate-850 dark:border-slate-100 cursor-pointer"
+        style={{ backgroundColor: 'var(--brand-color)', color: accessibleBrandText }}
       >
-        <Sparkles className="h-5 w-5 text-white animate-bounce" />
+        <Sparkles className="h-5 w-5 animate-bounce" />
         {isOpen ? (
-          <span className="text-xs font-bold text-white pr-2">Fechar Catarina</span>
+          <span className="text-xs font-bold pr-2">Fechar Catarina</span>
         ) : (
-          <span className="text-xs font-bold text-white pr-2">Ajuda Catarina AI</span>
+          <span className="text-xs font-bold pr-2">Ajuda Catarina AI</span>
         )}
       </button>
 

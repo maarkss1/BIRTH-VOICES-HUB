@@ -1,7 +1,7 @@
 - De: Agente 03 (Design System e Acessibilidade)
 - Para: Agente 02 (Produto, Navegação e UX)
 - Onda: 3
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -68,3 +68,18 @@ Ver os dois itens acima, por arquivo.
 ## Contexto adicional
 Nenhum destes itens é bloqueador de release. Achados de severidade moderada (os campos continuam
 utilizáveis, o problema é robustez para leitor de tela e para tenants com marca clara).
+
+## Resolução
+
+`Login.tsx`/`Register.tsx`: `htmlFor`/`id` via `useId()` em todos os 5 campos citados (Email/Senha,
+Nome da Empresa/Email Profissional/Senha). Botão de submit de ambos e a bolha de chat + case de uso
+ativo do carrossel em `Landing.tsx` agora usam `getAccessibleTextOnBrand(brandColor)` em vez de
+`text-white` fixo — `brandColor` lido de `useSessionStore` (já populado pré-login via `App.tsx`/
+`applyBrandColorToDom`, confirmado antes de usar). De passagem, encontrado e corrigido o mesmo
+padrão em `components/GlobalHelpCenter.tsx` (botão flutuante "Ajuda Catarina AI") — não estava
+listado neste handoff, mas é o mesmo defeito.
+
+Não adicionei teste de componente novo para `Login.tsx`/`Register.tsx`/`Landing.tsx`: nenhum dos
+três tinha suíte própria antes desta mudança (nenhuma regressão de cobertura), a função de
+contraste em si já tem teste dedicado (`tokens.test.ts`, Agente 03), e o fluxo funcional de
+login/registro já é exercitado por `e2e/auth.spec.ts` (Agente 08, Onda 3).
