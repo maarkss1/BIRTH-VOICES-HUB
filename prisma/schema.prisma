@@ -25,6 +25,7 @@ model Tenant {
   agents        Agent[]
   auditLogs     AuditLog[]
   settings      Setting[]
+  aiConsent     TenantAiConsent?
 }
 
 model User {
@@ -206,6 +207,33 @@ model Setting {
   @@unique([tenantId, userId, key])
   @@index([tenantId])
   @@index([userId])
+}
+
+// First-class LGPD consent record: whether this tenant has authorized sending its data (contact
+// info, call transcripts) to an external AI provider (OpenAI/Anthropic/Gemini/ElevenLabs) via
+// LLMGateway. Resolves .agents/handoffs/onda-2/04-para-01-ai-consent-schema.md — Agente 04
+// (owner of lib/voice-runtime/**) had been enforcing this via the generic `Setting` table
+// (key `ai_provider_consent`) as a real, working, tenant-isolated interim mechanism; this model
+// is the dedicated, discoverable (via `prisma studio`/schema) replacement with proper audit
+// columns. `settingService.ts` (Agente 04's own file) is expected to switch its
+// getAiConsent/grantAiConsent/revokeAiConsent implementation to this model — its public signature
+// does not need to change, so LLMGateway.ts/SessionManager.ts/ai.controller.ts (its callers) do
+// not need to change either. One row per tenant (`tenantId` is unique): `granted: false` is the
+// safe default for a brand-new tenant (fail closed, no regression vs. "no Setting row" today).
+model TenantAiConsent {
+  id              String    @id @default(uuid())
+  tenantId        String    @unique
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  granted         Boolean   @default(false)
+  consentVersion  String?
+  grantedAt       DateTime?
+  revokedAt       DateTime?
+  grantedByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 // SECURITY.md states every model except "core global models" carries a tenantId. APIKey and
