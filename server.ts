@@ -18,6 +18,7 @@ import { verifyToken } from "./src/lib/auth-tokens.js";
 import { getRedisUrl } from "./src/lib/env.js";
 import { runWithRequestId } from "./src/lib/requestContext.js";
 import { csrfProtection } from "./src/middlewares/index.js";
+import { hasPermission } from "./src/middlewares/rbac.js";
 import { createHealthRouter } from "./src/routes/health.routes.js";
 import apiRoutes from "./src/routes/index.js";
 import telephonyRoutes from "./src/routes/telephony.routes.js";
@@ -203,11 +204,6 @@ async function startServer() {
   // 11-para-00-socketio-tenant-rbac-audit.md (Agente 11 -> Coordenador) — this closes it.
   const watchRoom = (tenantId: string, sessionId: string) => `watch:${tenantId}:${sessionId}`;
 
-  // Same conservative proxy the client (LiveSupervisor.tsx) uses until a dedicated 'supervisor'
-  // role exists (see handoff 11-para-01-supervisor-role-rbac.md, addressed to Agente 01) — kept
-  // in sync deliberately, and this is the authoritative check: the client-side gate is UX only.
-  const ROLES_ALLOWED_TO_INTERVENE = ['admin'];
-
   io.on("connection", (socket) => {
     logger.info('Supervisor connected via WebSocket', socket.id);
 
@@ -263,10 +259,10 @@ async function startServer() {
       }, 1000);
     }
 
-    socket.on("intervene_call", (data: { sessionId?: string }) => {
-      const role = socket.data.user?.role;
-      if (!ROLES_ALLOWED_TO_INTERVENE.includes(role)) {
-        logger.warn('Intervention rejected: role not authorized', { role, userId: socket.data.user?.id });
+    socket.on("intervene_call", async (data: { sessionId?: string }) => {
+      const allowed = await hasPermission(socket.data.user, 'supervision:intervene');
+      if (!allowed) {
+        logger.warn('Intervention rejected: permission denied', { role: socket.data.user?.role, userId: socket.data.user?.id });
         socket.emit("intervention_error", { message: "Sem permissão para intervir nesta chamada." });
         return;
       }

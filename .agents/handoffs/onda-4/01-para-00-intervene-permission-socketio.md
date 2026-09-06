@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 00 (Coordenador — dono de `server.ts`)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -60,3 +60,11 @@ funciona sem mudança na autenticação do socket.
 ## Contexto adicional
 Não bloqueador. `ROLES_ALLOWED_TO_INTERVENE` como está hoje é seguro (mais restritivo que
 qualquer alternativa), então isso pode esperar a próxima janela de mudança em `server.ts`.
+
+## Resolução
+
+Aplicado exatamente como sugerido: `server.ts` importa `hasPermission` de `src/middlewares/rbac.ts`
+e `intervene_call` agora resolve `supervision:intervene` ao vivo em vez do array
+`ROLES_ALLOWED_TO_INTERVENE` hardcoded (removido). `admin`/`supervisor` continuam autorizados por
+padrão (sem regressão), e revogar a permissão de um role passa a valer imediatamente na próxima
+tentativa de intervenção, sem esperar refresh de token. typecheck/lint/test/build verdes.
