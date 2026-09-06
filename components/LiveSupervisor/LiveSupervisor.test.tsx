@@ -220,4 +220,57 @@ describe('LiveSupervisor', () => {
     expect(liveRegion).toHaveAttribute('aria-live', 'assertive');
     expect(liveRegion).toHaveTextContent('Cliente ameaça cancelar contrato');
   });
+
+  it('announces new warning/info alerts through a separate polite region, without duplicating the critical one', () => {
+    render(<LiveSupervisor sessionId="sess-123" />);
+    const socket = getMockSocket();
+
+    act(() => {
+      socket.trigger('connect');
+      socket.trigger('telemetry_stream', {
+        sessionId: 'sess-123',
+        callDuration: 5,
+        emotions: { empathy: 50, confidence: 50, frustration: 60 },
+        intent: { primary: 'Suporte', confidence: 60 },
+        objections: [],
+        alerts: [
+          { id: 'warn-1', level: 'warning', message: 'Tom de voz elevado', timestamp: Date.now() },
+          { id: 'info-1', level: 'info', message: 'Cliente mencionou concorrente', timestamp: Date.now() }
+        ]
+      });
+    });
+
+    const politeRegion = screen.getByRole('status');
+    expect(politeRegion).toHaveAttribute('aria-live', 'polite');
+    // Only the latest non-critical alert needs to be present in the polite region's current text —
+    // it is not expected to re-announce every alert ever seen, only what's new.
+    expect(politeRegion).toHaveTextContent('Cliente mencionou concorrente');
+
+    // No critical alert arrived, so the assertive region must stay empty (not repurposed for
+    // warning/info, which would defeat the point of keeping the two severities separate).
+    const criticalRegion = screen.getByRole('alert');
+    expect(criticalRegion).toHaveTextContent('');
+
+    // A later critical alert must still go through the assertive region, not the polite one,
+    // and must not re-trigger the polite region for alerts already announced.
+    act(() => {
+      socket.trigger('telemetry_stream', {
+        sessionId: 'sess-123',
+        callDuration: 6,
+        emotions: { empathy: 50, confidence: 50, frustration: 60 },
+        intent: { primary: 'Suporte', confidence: 60 },
+        objections: [],
+        alerts: [
+          { id: 'warn-1', level: 'warning', message: 'Tom de voz elevado', timestamp: Date.now() },
+          { id: 'info-1', level: 'info', message: 'Cliente mencionou concorrente', timestamp: Date.now() },
+          { id: 'crit-2', level: 'critical', message: 'Cliente exige cancelamento imediato', timestamp: Date.now() }
+        ]
+      });
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Cliente exige cancelamento imediato');
+    // Still the previous non-critical message — 'warn-1'/'info-1' were already announced above
+    // and must not be re-announced just because the alert list was retransmitted.
+    expect(screen.getByRole('status')).toHaveTextContent('Cliente mencionou concorrente');
+  });
 });
