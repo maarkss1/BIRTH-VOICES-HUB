@@ -41,12 +41,12 @@ export const createUserSchema = z.object({
   email: z.string().email('Formato de email inválido'),
   password: z.string().min(6, 'A senha precisa de no mínimo 6 caracteres'),
   companyName: z.string().optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['admin', 'user', 'supervisor']).optional(),
 });
 
 export const updateUserSchema = z.object({
   companyName: z.string().optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['admin', 'user', 'supervisor']).optional(),
   password: z.string().min(6).optional(),
 });
 
