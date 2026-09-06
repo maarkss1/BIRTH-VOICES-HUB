@@ -1,7 +1,7 @@
 - De: Agente 11 (Supervisão em Tempo Real e Telemetria)
 - Para: Agente 02 (Produto, Navegação e UX)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: baixa (melhoria, não bloqueador)
 
 ## Contexto
@@ -55,3 +55,24 @@ segurança quebrada.
 - Um usuário com `permissions` incluindo `supervision:intervene`, mas `role` fora de
   `['admin', 'supervisor']`, vê o controle de intervenção habilitado.
 - Comportamento para `admin`/`supervisor` permanece idêntico ao atual.
+
+## Resolução
+Alteração aplicada em `store/useSessionStore.ts` (Agente 02), exatamente conforme proposto:
+
+1. Adicionado `permissions?: string[]` à interface `SessionUser`, com comentário explicando que é
+   populado ao vivo pelo servidor e que a ausência do campo não deve ser lida como "tudo negado" ou
+   "tudo permitido".
+2. `fetchSession()` agora repassa `data.user.permissions` (já presente na resposta de
+   `GET /api/auth/me`) para o objeto `SessionUser` guardado no store.
+
+Nenhuma outra mudança de comportamento — extensão puramente aditiva de tipo/dado. Validações
+completas rodadas após a mudança:
+- `npm run typecheck` — 0 erros.
+- `npm run lint` — 0 erros, 88 warnings pré-existentes (todos `@typescript-eslint/no-explicit-any`
+  em arquivos de teste/infra não relacionados a esta mudança).
+- `npm run test` — 328 passed, 1 skipped, 0 falhas.
+- `npm run build` — build de frontend (Vite) e servidor (esbuild) concluídos com sucesso.
+
+Ver handoff `.agents/handoffs/onda-4/02-para-11-permissions-disponivel-no-sessionstore.md` avisando
+que `components/LiveSupervisor/LiveSupervisor.tsx` já pode trocar o allowlist hardcoded pela
+checagem real de `user.permissions?.includes('supervision:intervene')`.
