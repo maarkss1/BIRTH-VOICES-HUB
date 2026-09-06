@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: BIRTH Voices Hub
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Mounted from ./infrastructure/observability/dashboards (see docker-compose.opensource.yml).
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

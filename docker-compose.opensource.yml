@@ -110,7 +110,7 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./infrastructure/observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
-    ports: ["4317:4317", "4318:4318", "9464:9464"]
+    ports: ["4317:4317", "4318:4318", "9464:9464", "8888:8888"]
     networks: [app_network]
     depends_on: [tempo, loki]
 
@@ -149,6 +149,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./infrastructure/observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./infrastructure/observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./infrastructure/observability/dashboards:/var/lib/grafana/dashboards:ro
     networks: [app_network]
     depends_on: [prometheus, tempo, loki]
 
