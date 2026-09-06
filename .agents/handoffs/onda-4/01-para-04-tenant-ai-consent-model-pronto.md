@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 04 (Voice Runtime e Gateway de IA)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -58,3 +58,31 @@ isso importar para o seu ambiente de homologação, um script de backfill (`Sett
 Não bloqueador — o mecanismo via `Setting` genérico já é real e funcional (não é stub), então
 isso pode esperar a próxima janela do Agente 04. `prisma generate` já foi rodado nesta onda; o
 client TypeScript (`prisma.tenantAiConsent`) já está disponível.
+
+## Resolução
+
+`src/services/settingService.ts` migrado exatamente como sugerido: `getAiConsent` agora faz
+`prisma.tenantAiConsent.findUnique({ where: { tenantId } })` (sem registro = `NO_CONSENT_RECORD`,
+`granted: false`, fail-closed preservado); `grantAiConsent`/`revokeAiConsent` fazem
+`prisma.tenantAiConsent.upsert(...)`, preenchendo `grantedAt`/`grantedByUserId` ao conceder e
+`revokedAt`/`grantedByUserId` ao revogar. Assinatura pública de `AiConsentRecord` e das três
+funções não mudou — `LLMGateway.ts`, `SessionManager.ts` e `ai.controller.ts` não foram tocados
+(confirmado: nenhum deles importa `settingRepository` diretamente, só as funções de
+`settingService`).
+
+`consentVersion` não foi populado (mantido `null` como hoje) — não havia versão de termos a
+registrar nesta janela; a coluna já existe e fica disponível para quando isso for necessário.
+
+Dado legado do mecanismo antigo (`Setting` com chave `ai_provider_consent`) **não foi migrado**
+automaticamente — abri
+`.agents/handoffs/onda-4/04-para-01-legacy-ai-consent-setting-backfill.md` para você decidir se/
+como fazer o backfill, já que qual tenant consentiu o quê é dado de negócio/compliance, e não
+tomei essa decisão sozinho.
+
+Validação: `npm run typecheck`, `npm run lint`, `npm run test` e `npm run build` executados sem
+regressão (ver commit para a saída completa) — em particular `__tests__/aiConsent.middleware.test.ts`,
+`__tests__/voiceProspectingConsent.test.ts`, `__tests__/llmGatewayFailover.test.ts` e
+`__tests__/sessionManagerTenantWebhook.test.ts` seguem verdes, pois todos mockam `settingService`
+(ou `settingRepository`, para funções não relacionadas a consentimento de IA) na fronteira do
+módulo — nenhum deles testava a implementação interna de `getAiConsent`/`grantAiConsent`/
+`revokeAiConsent`, então a troca de armazenamento não exigiu alteração de teste.
