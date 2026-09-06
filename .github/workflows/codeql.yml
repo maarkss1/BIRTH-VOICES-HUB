@@ -1,0 +1,43 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [ main, master, 'release/**' ]
+  pull_request:
+    branches: [ main, master, 'release/**' ]
+  schedule:
+    # Weekly baseline scan even without new commits, to catch advisories against unchanged code.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # Default query pack ("security-extended" would also cover style/quality findings we
+          # don't currently triage) keeps this focused on real vulnerability classes.
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"

@@ -2,10 +2,19 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: otel-collector
+  # Custom application metrics forwarded via OTLP -> otel-collector's "prometheus" exporter
+  # (see otel-collector.yml, exporters.prometheus, port 9464). Empty until the app registers an
+  # OTel MeterProvider with a metric exporter (lib/otelInitializer.ts today only wires a trace
+  # exporter) — kept here so the pipeline lights up automatically once that's added, instead of
+  # requiring a second infra change. See .agents/handoffs/onda-4/10-para-04-otel-metrics-logs-nao-exportados.md.
+  - job_name: otel-collector-app-metrics
     static_configs:
       - targets: ["otel-collector:9464"]
-  - job_name: birth-voices
-    metrics_path: /metrics
+
+  # The collector's own internal telemetry (spans/logs/metrics received, exported, dropped,
+  # queue depth) — real signal today because the app already exports traces via OTLP
+  # (lib/otelInitializer.ts). This is what infrastructure/observability/dashboards/otel-pipeline-health.json
+  # renders. Self-metrics endpoint is explicitly bound in otel-collector.yml (service.telemetry.metrics).
+  - job_name: otel-collector-internal
     static_configs:
-      - targets: ["app:3000"]
+      - targets: ["otel-collector:8888"]
