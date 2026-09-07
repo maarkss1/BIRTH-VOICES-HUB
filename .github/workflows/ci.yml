@@ -172,7 +172,7 @@ jobs:
         fi
 
         echo "Hitting /health directly as an extra check..."
-        curl --fail --show-error --silent http://localhost:3000/health
+        curl --fail --show-error --silent http://127.0.0.1:3000/health
 
     - name: Dump container logs
       if: always()
