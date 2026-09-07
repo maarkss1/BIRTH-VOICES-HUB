@@ -23,7 +23,8 @@ export type RuntimeNodeType =
   | 'end'
   | 'knowledge'
   | 'tool'
-  | 'voice';
+  | 'voice'
+  | 'human_handoff';
 
 type RuntimeConfig = Record<string, Prisma.JsonValue>;
 
@@ -148,15 +149,32 @@ export interface VoiceOverride {
   language?: string;
 }
 
+/**
+ * MVP transfer target resolved from the nearest `human_handoff` node the call has passed through
+ * (Onda 6 rodada 2 — see `resolveTransferDetails` below for exactly what is and is not resolved).
+ * `to` is always the node's own literal `fallbackNumber` — this MVP dials that number directly and
+ * has no department->number lookup/PBX routing; `department` is carried through purely as a label
+ * for logging/observability on the telephony side, never resolved into a phone number itself. See
+ * `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`.
+ */
+export interface TransferDetails {
+  to: string;
+  timeoutSec: number;
+  record: boolean;
+  message: string;
+  department?: string;
+}
+
 export interface PreparedWorkflowTurn {
   state: WorkflowRuntimeState;
-  mode: 'llm' | 'direct' | 'tool_pending';
+  mode: 'llm' | 'direct' | 'tool_pending' | 'transfer';
   systemInstruction?: string;
   preferredProvider?: RuntimeProvider;
   directReply?: string;
   nextQuestion?: string;
   shouldEnd: boolean;
   voiceOverride?: VoiceOverride;
+  transferDetails?: TransferDetails;
 }
 
 const SUPPORTED_TYPES = new Set<RuntimeNodeType>([
@@ -171,21 +189,28 @@ const SUPPORTED_TYPES = new Set<RuntimeNodeType>([
   'knowledge',
   'tool',
   'voice',
+  'human_handoff',
 ]);
 
 // 'knowledge' and 'tool' were unsupported through Onda 4 (see git history for the removed
 // UNSUPPORTED_REASON entries) — as of Onda 5 they are executed for real
-// (`applyKnowledgeNode`/`executeToolNodeAsync` below). 'voice' became executable in Onda 6 as a
-// Twilio-named-TTS MVP (see `resolveVoiceOverride` below and
+// (`applyKnowledgeNode`/`executeToolNodeAsync` below). 'voice' became executable in Onda 6 rodada 1
+// as a Twilio-named-TTS MVP (see `resolveVoiceOverride` below and
 // `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`) — it is a passive node that only
 // sets `PreparedWorkflowTurn.voiceOverride` and continues to the next node, never an interaction
-// by itself. See docs/patterns/workflow-execution-contract.md §2/§3 for the up-to-date executable
-// list. 'human_handoff' remains blocked: it requires a telephony transfer bridge in
-// `telephonyService.ts` (Agente 05, exclusive owner) that is out of scope here — see
-// .agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md.
-const UNSUPPORTED_REASON: Partial<Record<string, string>> = {
-  human_handoff: 'A transferência humana ainda não possui bridge de telefonia validada para produção.',
-};
+// by itself. 'human_handoff' became executable in Onda 6 rodada 2
+// (`.agents/handoffs/onda-6/00-para-04-human-handoff-mvp.md`): the Studio node already carries a
+// literal `fallbackNumber` phone number in its own config (no department->number lookup/schema
+// change needed, which was the blocker `.agents/handoffs/onda-5/04-para-05-voice-human-handoff-
+// design.md` raised) — see `resolveTransferDetails` below. It is a terminal-of-turn node exactly
+// like `prompt`/`question`/`tool`: the synchronous graph walk stops there and
+// `PreparedWorkflowTurn.mode` becomes `'transfer'`; unlike `tool`, there is no resume function —
+// the runtime has nothing further to execute once a real telephony bridge takes over (Agente 05,
+// `telephony.controller.ts`). See docs/patterns/workflow-execution-contract.md §2/§3 for the
+// up-to-date executable list. No node type is unsupported by the runtime's capability gate today —
+// `UNSUPPORTED_REASON` is kept (empty) as the extension point for the next node type that needs it,
+// rather than removed, so `validateRuntimeCompatibility` does not need reshaping again next time.
+const UNSUPPORTED_REASON: Partial<Record<string, string>> = {};
 
 const SUPPORTED_TOOL_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -283,6 +308,28 @@ function resolveVoiceOverride(config: RuntimeConfig): VoiceOverride | undefined 
 
   const language = asString(config.language);
   return { voice: mapped, ...(language ? { language } : {}) };
+}
+
+const DEFAULT_TRANSFER_TIMEOUT_SEC = 30;
+const DEFAULT_TRANSFER_MESSAGE = 'Aguarde um momento enquanto encaminho sua ligação.';
+
+/**
+ * Resolves a Studio `human_handoff` node's config into the `TransferDetails` Agente 05 dials —
+ * MVP: `to` is always the node's own literal `fallbackNumber`, never a department->number lookup
+ * (that remains a separate, out-of-scope PBX-routing feature — see
+ * `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`). Returns `undefined` whenever
+ * `fallbackNumber` is missing/empty — the caller must never invent a destination number.
+ */
+function resolveTransferDetails(config: RuntimeConfig): TransferDetails | undefined {
+  const to = asString(config.fallbackNumber);
+  if (!to) return undefined;
+
+  const timeoutSec = asNumber(config.ringTimeoutSec, DEFAULT_TRANSFER_TIMEOUT_SEC);
+  const record = isTruthy(config.recordCall);
+  const message = asString(config.transferMessage) || DEFAULT_TRANSFER_MESSAGE;
+  const department = asString(config.department);
+
+  return { to, timeoutSec, record, message, ...(department ? { department } : {}) };
 }
 
 export function mapRuntimeProvider(value: unknown): RuntimeProvider | null {
@@ -776,6 +823,30 @@ function advanceDeterministicNode(state: WorkflowRuntimeState, node: RuntimeNode
   return selectDefaultEdge(state, node.id)?.target ?? null;
 }
 
+function hasResolvableTransfer(node: RuntimeNode): boolean {
+  return resolveTransferDetails(node.config) !== undefined;
+}
+
+/**
+ * Shared by both graph walkers (`advanceUntilInteraction`/`advanceUntilInteractionAsync`): a
+ * `human_handoff` node reached with no configured `fallbackNumber` is never a stopping point —
+ * AGENTS.md §14 forbids fabricating a transfer destination, so this treats it exactly like a
+ * failed `tool` node (see `applyToolFallback`): log a warning, leave a recoverable
+ * `handoff_ok`/`handoff_error` pair for a downstream `condition` node, and continue the walk past
+ * it on its single outgoing edge (or stop the call if it has none). Never invents a phone number.
+ */
+function skipUnresolvableHumanHandoff(state: WorkflowRuntimeState, node: RuntimeNode): string | null {
+  logger.warn('Workflow human_handoff node has no fallbackNumber configured; skipping the transfer and continuing on the default path', {
+    workflowId: state.workflowId,
+    nodeId: node.id,
+  });
+  state.variables.handoff_ok = 'false';
+  state.variables.handoff_error = 'fallback_number_missing';
+  state.variables[`handoff_${node.id}_ok`] = 'false';
+  state.variables[`handoff_${node.id}_error`] = 'fallback_number_missing';
+  return selectDefaultEdge(state, node.id)?.target ?? null;
+}
+
 /**
  * Synchronous graph walk used by every `prepareWorkflowTurn` call (a live phone turn,
  * `telephonyService.ts` calling it without `await`). As of Onda 6, a `tool` node is a stopping
@@ -805,6 +876,15 @@ function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string
       state.currentNodeId = null;
       logger.error('Workflow runtime could not resolve node', { workflowId: state.workflowId, nodeId: currentId });
       return state;
+    }
+
+    if (node.type === 'human_handoff') {
+      if (hasResolvableTransfer(node)) {
+        state.currentNodeId = node.id;
+        return state;
+      }
+      currentId = skipUnresolvableHumanHandoff(state, node);
+      continue;
     }
 
     if (node.type === 'prompt' || node.type === 'question' || node.type === 'tool') {
@@ -864,6 +944,23 @@ async function advanceUntilInteractionAsync(state: WorkflowRuntimeState, fromNod
       state.ended = true;
       state.currentNodeId = node.id;
       return state;
+    }
+
+    if (node.type === 'human_handoff') {
+      // Known limitation, same shape as the `voice` node's opening-greeting gap documented in
+      // `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`: `initializeWorkflowRuntime`
+      // returns a bare `WorkflowRuntimeState`, not a `PreparedWorkflowTurn`, so a `human_handoff`
+      // reached in this initial segment (before the call's first `prompt`/`question`) stops the
+      // walk here (never fabricates a transfer, never silently drops it) but has no channel to
+      // surface `mode: 'transfer'` to a caller yet. `currentNodeId` stays correctly pointed at it,
+      // so the very next `prepareWorkflowTurn` call re-signals `mode: 'transfer'` via the same
+      // defensive re-check `advanceUntilInteraction` relies on for `tool`.
+      if (hasResolvableTransfer(node)) {
+        state.currentNodeId = node.id;
+        return state;
+      }
+      currentId = skipUnresolvableHumanHandoff(state, node);
+      continue;
     }
 
     if (node.type === 'tool') {
@@ -970,8 +1067,33 @@ function attachVoiceOverride(turn: PreparedWorkflowTurn): PreparedWorkflowTurn {
   return voiceOverride ? { ...turn, voiceOverride } : turn;
 }
 
-function isToolPending(state: WorkflowRuntimeState): boolean {
-  return nodeById(state, state.currentNodeId)?.type === 'tool';
+/**
+ * Checks whether the graph walk just stopped at a node that itself demands a special
+ * `PreparedWorkflowTurn.mode` instead of the ordinary `llm`/`direct` result the caller was
+ * building — a `tool` node (`tool_pending`, resumed via `resumeAfterTool`) or a `human_handoff`
+ * node with a resolvable transfer (`transfer`, terminal — no resume function exists for it).
+ * Returns `null` when neither applies, so the caller falls through to its normal `llm`/`direct`
+ * logic unchanged. Centralizing this (instead of re-deriving it after every `advancePastCurrent`
+ * call, as the pre-Onda-6-rodada-2 `isToolPending` helper required its callers to do individually)
+ * is what guarantees a `human_handoff` reached right after a `tool`/`question`/`prompt` node is
+ * never silently missed at any of the call sites below.
+ */
+function pendingInterruptTurn(state: WorkflowRuntimeState): PreparedWorkflowTurn | null {
+  const node = nodeById(state, state.currentNodeId);
+  if (!node) return null;
+
+  if (node.type === 'tool') {
+    return { state, mode: 'tool_pending', shouldEnd: false };
+  }
+
+  if (node.type === 'human_handoff') {
+    const transferDetails = resolveTransferDetails(node.config);
+    if (transferDetails) {
+      return { state, mode: 'transfer', transferDetails, shouldEnd: false };
+    }
+  }
+
+  return null;
 }
 
 export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: string): PreparedWorkflowTurn {
@@ -993,12 +1115,14 @@ function prepareWorkflowTurnInternal(state: WorkflowRuntimeState, userText: stri
   }
 
   // Defensive only: a correct caller never calls `prepareWorkflowTurn` again while the previous
-  // turn's `mode` was `'tool_pending'` — it calls `resumeAfterTool` instead (see
-  // `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`). If it does anyway, re-signal
-  // `tool_pending` rather than silently treating the tool node as a generic dead end.
-  if (current.type === 'tool') {
-    return { state: next, mode: 'tool_pending', shouldEnd: false };
-  }
+  // turn's `mode` was `'tool_pending'`/`'transfer'` — it calls `resumeAfterTool` for the former
+  // (see `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`), and there is nothing to
+  // resume for the latter (`human_handoff` has no resume function — see
+  // `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`). If a caller re-invokes this
+  // anyway while still parked on either node, re-signal the same mode rather than silently
+  // treating the node as a generic dead end.
+  const pendingAtCurrent = pendingInterruptTurn(next);
+  if (pendingAtCurrent) return pendingAtCurrent;
 
   if (current.type === 'question') {
     const regexText = asString(current.config.validationRegex);
@@ -1026,9 +1150,8 @@ function prepareWorkflowTurnInternal(state: WorkflowRuntimeState, userText: stri
 
       delete next.retries[current.id];
       advancePastCurrent(next, current, 'out-1');
-      if (isToolPending(next)) {
-        return { state: next, mode: 'tool_pending', shouldEnd: false };
-      }
+      const pendingAfterRetriesExhausted = pendingInterruptTurn(next);
+      if (pendingAfterRetriesExhausted) return pendingAfterRetriesExhausted;
       const nextQuestion = questionText(next);
       return {
         state: next,
@@ -1043,17 +1166,15 @@ function prepareWorkflowTurnInternal(state: WorkflowRuntimeState, userText: stri
     delete next.retries[current.id];
     advancePastCurrent(next, current, 'out-0');
 
-    if (isToolPending(next)) {
-      return { state: next, mode: 'tool_pending', shouldEnd: false };
-    }
+    const pendingAfterAnswer = pendingInterruptTurn(next);
+    if (pendingAfterAnswer) return pendingAfterAnswer;
 
     const afterQuestion = nodeById(next, next.currentNodeId);
     if (afterQuestion?.type === 'prompt') {
       const instruction = renderTemplate(asString(afterQuestion.config.promptText), next.variables);
       advancePastCurrent(next, afterQuestion);
-      if (isToolPending(next)) {
-        return { state: next, mode: 'tool_pending', shouldEnd: false };
-      }
+      const pendingAfterPrompt = pendingInterruptTurn(next);
+      if (pendingAfterPrompt) return pendingAfterPrompt;
       return {
         state: next,
         mode: 'llm',
@@ -1076,9 +1197,8 @@ function prepareWorkflowTurnInternal(state: WorkflowRuntimeState, userText: stri
   if (current.type === 'prompt') {
     const instruction = renderTemplate(asString(current.config.promptText), next.variables);
     advancePastCurrent(next, current);
-    if (isToolPending(next)) {
-      return { state: next, mode: 'tool_pending', shouldEnd: false };
-    }
+    const pendingAfterPrompt = pendingInterruptTurn(next);
+    if (pendingAfterPrompt) return pendingAfterPrompt;
     return {
       state: next,
       mode: 'llm',
@@ -1125,18 +1245,16 @@ export async function resumeAfterTool(state: WorkflowRuntimeState, node: Workflo
   await executeToolNodeAsync(next, toolNode);
   advancePastCurrent(next, toolNode);
 
-  if (isToolPending(next)) {
-    return attachVoiceOverride({ state: next, mode: 'tool_pending', shouldEnd: false });
-  }
+  const pendingAfterTool = pendingInterruptTurn(next);
+  if (pendingAfterTool) return attachVoiceOverride(pendingAfterTool);
 
   const current = nodeById(next, next.currentNodeId);
 
   if (current?.type === 'prompt') {
     const instruction = renderTemplate(asString(current.config.promptText), next.variables);
     advancePastCurrent(next, current);
-    if (isToolPending(next)) {
-      return attachVoiceOverride({ state: next, mode: 'tool_pending', shouldEnd: false });
-    }
+    const pendingAfterPrompt = pendingInterruptTurn(next);
+    if (pendingAfterPrompt) return attachVoiceOverride(pendingAfterPrompt);
     return attachVoiceOverride({
       state: next,
       mode: 'llm',
