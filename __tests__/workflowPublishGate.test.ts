@@ -5,6 +5,8 @@ vi.mock('../src/repositories/workflowRepository.js', () => ({
   findActiveWorkflowForTenant: vi.fn(),
   upsertWorkflow: vi.fn(),
   deleteWorkflow: vi.fn(),
+  createWorkflowVersion: vi.fn(),
+  isUniqueConstraintViolation: vi.fn(() => false),
 }));
 
 import { findWorkflowForTenant, upsertWorkflow } from '../src/repositories/workflowRepository.js';

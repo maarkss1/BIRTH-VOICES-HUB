@@ -1,7 +1,7 @@
 - De: Agente 07 (Studio, Workflows e Colaboração)
 - Para: Agente 08 (QA, Testes e Segurança)
 - Onda: 5
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -95,3 +95,45 @@ em `Workflow.metadata`). Ver `src/services/workflowService.ts` (comentários em 
 `src/services/workflowVersioning.test.ts` (meu arquivo, reescrito nesta mesma mudança) para a
 cobertura completa do novo mecanismo, incluindo o caminho de corrida do `P2002` (duas publicações
 concorrentes arquivando a mesma versão).
+
+## Resolução
+
+Aplicada exatamente a correção sugerida em "Alteração necessária"
+(`__tests__/workflowPublishGate.test.ts`, linhas 3-8): os dois exports que faltavam foram
+adicionados ao `vi.mock('../src/repositories/workflowRepository.js', ...)`:
+
+```ts
+vi.mock('../src/repositories/workflowRepository.js', () => ({
+  findWorkflowForTenant: vi.fn(),
+  findActiveWorkflowForTenant: vi.fn(),
+  upsertWorkflow: vi.fn(),
+  deleteWorkflow: vi.fn(),
+  createWorkflowVersion: vi.fn(),
+  isUniqueConstraintViolation: vi.fn(() => false),
+}));
+```
+
+Nenhuma asserção de valor foi tocada, como o handoff previa.
+
+**Validação**: diferente do handoff irmão sobre `telephonyService.test.ts`, esta correção
+**não depende de nenhum código real de `agente/07-workflow-version-persistencia-real` estar
+mesclado** — `vi.mock` substitui o módulo inteiro por um mock isolado, então a lista de exports do
+mock só precisa acompanhar o que o `workflowService.ts` *desta branch* (`integracao/onda-5`, sem o
+merge de 07) já importa/chama de `workflowRepository.js`. Rodando isoladamente nesta branch:
+
+- `npx vitest run __tests__/workflowPublishGate.test.ts` → **3 passed** (0 falhas), não `1 failed`
+  como o texto de "Teste esperado" do handoff original previa para o cenário pré-merge — essa
+  previsão parece ter reaproveitado por engano os números do estado *anterior ao fix* (idênticos
+  aos citados em "## Problema"). Corrigindo o registro: com o fix aplicado, o arquivo já fica 100%
+  verde mesmo antes do merge de `agente/07-workflow-version-persistencia-real`.
+- `npx vitest run` completo (toda a suíte) → `2 failed | 558 passed | 1 skipped`; os 2 únicos
+  vermelhos são as duas asserções de `agentId` em `telephonyService.test.ts`, cobertas pelo handoff
+  irmão `05-para-08-telephonyService-test-agentid-arg.md` (essas sim dependem do merge de
+  `agente/05-pass-agentid`, por serem sobre comportamento de runtime real, não sobre exports de
+  mock).
+- `typecheck`, `lint` (0 erros, só warnings `any` pré-existentes) e `build` 100% verdes.
+
+Ou seja: esta correção específica já deixa `workflowPublishGate.test.ts` verde imediatamente,
+independentemente da ordem de merge com `agente/07-workflow-version-persistencia-real` — só o gate
+completo do repositório (as duas outras asserções de `agentId`) permanece pendente do merge de
+`agente/05-pass-agentid`, como documentado no handoff irmão.

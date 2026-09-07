@@ -170,7 +170,11 @@ describe('telephonyService.startCall', () => {
         turns: [expect.objectContaining({ role: 'assistant', content: 'Oi, tudo bem?' })],
       }),
     );
-    expect(mockInitializeWorkflow).toHaveBeenCalledWith('tenant-1', expect.objectContaining({ direction: 'inbound' }));
+    expect(mockInitializeWorkflow).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ direction: 'inbound' }),
+      'agent-1',
+    );
   });
 
   it('adds the opening Question from the published workflow to the real phone greeting', async () => {
@@ -360,6 +364,11 @@ describe('telephonyService.startOutboundCall', () => {
     expect(persisted.callSid).toBe('CA9');
     expect(persisted.turns).toHaveLength(1);
     expect(persisted.turns[0]).toMatchObject({ role: 'assistant', content: 'Bom dia!' });
+    expect(mockInitializeWorkflow).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ direction: 'outbound' }),
+      'agent-1',
+    );
   });
 
   it('reuses the persisted outbound greeting on a TwiML replay without writing again', async () => {
