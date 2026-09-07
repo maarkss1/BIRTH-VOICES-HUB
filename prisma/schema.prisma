@@ -9,53 +9,55 @@ datasource db {
 }
 
 model Tenant {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users         User[]
-  memberships   Membership[]
-  roles         Role[]
-  workflows     Workflow[]
-  callLogs      CallLog[]
-  metrics       Metric[]
-  sessions      Session[]
-  agents        Agent[]
-  auditLogs     AuditLog[]
-  settings      Setting[]
-  aiConsent     TenantAiConsent?
+  users              User[]
+  memberships        Membership[]
+  roles              Role[]
+  workflows          Workflow[]
+  callLogs           CallLog[]
+  metrics            Metric[]
+  sessions           Session[]
+  agents             Agent[]
+  auditLogs          AuditLog[]
+  settings           Setting[]
+  aiConsent          TenantAiConsent?
   atlasGRCallResults AtlasGRCallResult[]
+  wallet             Wallet?
+  transactions       Transaction[]
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
+  id           String    @id @default(uuid())
+  email        String    @unique
   passwordHash String
   companyName  String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
 
-  tenantId     String?
-  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id])
 
-  memberships  Membership[]
-  sessions     Session[]
-  auditLogs    AuditLog[]
+  memberships Membership[]
+  sessions    Session[]
+  auditLogs   AuditLog[]
 
   @@index([tenantId])
 }
 
 model Membership {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  roleId    String
-  role      Role     @relation(fields: [roleId], references: [id])
+  id       String @id @default(uuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roleId   String
+  role     Role   @relation(fields: [roleId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -66,65 +68,65 @@ model Membership {
 }
 
 model Role {
-  id          String   @id @default(uuid())
+  id          String  @id @default(uuid())
   name        String
   description String?
-  tenantId    String?  // Null for system roles, populated for custom roles
-  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId    String? // Null for system roles, populated for custom roles
+  tenant      Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   permissions Permission[] @relation("RolePermissions")
   memberships Membership[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([tenantId])
 }
 
 model Permission {
-  id          String   @id @default(uuid())
-  name        String   @unique
+  id          String  @id @default(uuid())
+  name        String  @unique
   description String?
 
-  roles       Role[]   @relation("RolePermissions")
+  roles Role[] @relation("RolePermissions")
 }
 
 model Workflow {
-  id          String   @id @default(uuid())
+  id          String  @id @default(uuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId      String?
   name        String
   description String?
-  version     Int      @default(1)
-  status      String   @default("draft")
-  nodes       Json     @default("[]")
-  edges       Json     @default("[]")
-  metadata    Json     @default("{}")
+  version     Int     @default(1)
+  status      String  @default("draft")
+  nodes       Json    @default("[]")
+  edges       Json    @default("[]")
+  metadata    Json    @default("{}")
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
-  createdBy   String?
-  updatedBy   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  createdBy String?
+  updatedBy String?
 
   @@index([tenantId])
   @@index([userId])
 }
 
 model Session {
-  id        String   @id @default(uuid())
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  agentId   String?
-  channel   String
-  status    String   @default("active")
-  metadata  Json     @default("{}")
+  id       String  @id @default(uuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  agentId  String?
+  channel  String
+  status   String  @default("active")
+  metadata Json    @default("{}")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   @@index([tenantId])
@@ -146,18 +148,18 @@ model AuditLog {
 }
 
 model Agent {
-  id            String   @id @default(uuid())
+  id            String  @id @default(uuid())
   tenantId      String
-  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant        Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId        String?
   name          String
   model         String
-  configuration Json     @default("{}")
-  phoneNumber   String?  @unique
+  configuration Json    @default("{}")
+  phoneNumber   String? @unique
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  deletedAt     DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   @@index([tenantId])
   @@index([userId])
@@ -194,13 +196,13 @@ model Metric {
 }
 
 model Setting {
-  id        String   @id @default(uuid())
-  tenantId  String?
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId    String?
-  key       String
-  value     Json
-  isGlobal  Boolean  @default(false)
+  id       String  @id @default(uuid())
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String?
+  key      String
+  value    Json
+  isGlobal Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -271,35 +273,35 @@ model TenantAiConsent {
 // not something this model requires. Revisit once AtlasGR sends a stable tenant/account identifier
 // that round-trips through Bland's webhook (e.g. via `request_data`/`metadata` on the outbound call).
 model AtlasGRCallResult {
-  id         String    @id @default(uuid())
+  id         String   @id @default(uuid())
   tenantId   String?
-  tenant     Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   leadId     String?
-  callId     String    @unique
+  callId     String   @unique
   status     String?
   completed  Boolean?
   callLength Float?
-  receivedAt DateTime  @default(now())
+  receivedAt DateTime @default(now())
 
   @@index([tenantId])
   @@index([leadId])
 }
 
 model APIKey {
-  id        String   @id @default(uuid())
-  keyHash   String   @unique
-  name      String
-  scopes    Json     @default("[]")
+  id      String @id @default(uuid())
+  keyHash String @unique
+  name    String
+  scopes  Json   @default("[]")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   expiresAt DateTime?
 }
 
 model Integration {
-  id        String   @id @default(uuid())
-  provider  String
-  config    Json     @default("{}")
+  id       String @id @default(uuid())
+  provider String
+  config   Json   @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -311,11 +313,11 @@ model Integration {
 // per-user queries elsewhere in this schema. Currently unused (zero references to
 // `prisma.notification` in src/) — noted for whichever agent wires it up.
 model Notification {
-  id        String   @id @default(uuid())
-  userId    String
-  title     String
-  message   String
-  isRead    Boolean  @default(false)
+  id      String  @id @default(uuid())
+  userId  String
+  title   String
+  message String
+  isRead  Boolean @default(false)
 
   createdAt DateTime @default(now())
 }
@@ -326,11 +328,77 @@ model Notification {
 // lib/voice-runtime/). Agent 04 owns lib/voice-runtime/** — resolve the intended shape with a
 // handoff to Agent 01 before writing to this model for the first time.
 model AIProvider {
-  id        String   @id @default(uuid())
-  name      String
-  config    Json     @default("{}")
-  isActive  Boolean  @default(true)
+  id       String  @id @default(uuid())
+  name     String
+  config   Json    @default("{}")
+  isActive Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Global catalog of purchasable plans (Agente 12 — Growth, Billing e Monetização de Uso). Not
+// tenant-scoped — every tenant sees the same catalog (per-tenant custom pricing is out of scope
+// for this pass). Requested via
+// .agents/handoffs/onda-4/12-para-01-schema-billing-monetizacao.md — mirrors billingService.ts's
+// `PlanOption` interface field for field.
+model Plan {
+  id              String   @id @default(uuid())
+  slug            String   @unique
+  name            String
+  priceCents      Int
+  currency        String   @default("BRL")
+  billingInterval String // "monthly" | "yearly"
+  active          Boolean  @default(true)
+  wallets         Wallet[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// One row per tenant — same shape as TenantAiConsent (tenantId @unique). balanceCents is always an
+// integer number of cents (never a float) so real money never accumulates rounding error. Mirrors
+// billingService.ts's `WalletSummary` interface (joined with `plan` for planName/billingInterval).
+model Wallet {
+  id               String        @id @default(uuid())
+  tenantId         String        @unique
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  balanceCents     Int           @default(0)
+  currency         String        @default("BRL")
+  planId           String?
+  plan             Plan?         @relation(fields: [planId], references: [id])
+  planStatus       String        @default("inactive") // 'inactive'|'active'|'past_due'|'canceled'|'trialing'
+  currentPeriodEnd DateTime?
+  transactions     Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([planId])
+}
+
+// idempotencyKey is @unique and REQUIRED (not optional) — AGENTS.md §9 item 16 treats duplicate
+// charging with the same severity class as item 11 (webhook replay), now applied to real customer
+// money instead of a real call to a lead. tenantId is denormalized (in addition to the walletId
+// relation), with its own FK + cascade, so paginated tenant transaction history never needs a join
+// through Wallet — same "tenantId directly on the event row" shape already used by Metric. Mirrors
+// billingService.ts's `TransactionSummary`/`RecordTransactionInput` interfaces.
+model Transaction {
+  id                String   @id @default(uuid())
+  walletId          String
+  wallet            Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type              String
+  amountCents       Int // signed: positive = credit, negative = debit
+  balanceAfterCents Int
+  status            String
+  description       String?
+  externalReference String? // e.g. the payment gateway's own transaction id (Stripe), if any
+  idempotencyKey    String   @unique
+  createdAt         DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([walletId])
 }
