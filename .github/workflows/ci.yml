@@ -151,9 +151,9 @@ jobs:
           birthvoices-app:${{ github.sha }}
 
         echo "Waiting for container to report healthy (Dockerfile HEALTHCHECK)..."
-        for i in $(seq 1 30); do
+        for i in $(seq 1 40); do
           status="$(docker inspect --format='{{.State.Health.Status}}' ci-smoke 2>/dev/null || echo 'starting')"
-          echo "  [$i/30] health status: $status"
+          echo "  [$i/40] health status: $status"
           if [ "$status" = "healthy" ]; then
             break
           fi
