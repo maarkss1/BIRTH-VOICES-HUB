@@ -1,10 +1,28 @@
 import type { Prisma } from '@prisma/client';
 import type { StudioEdge, StudioNode, ValidationIssue } from '../../lib/studio/types.js';
 import * as workflowRepository from '../repositories/workflowRepository.js';
+import * as agentRepository from '../repositories/agentRepository.js';
 import { logger } from '../lib/logger.js';
+import {
+  knowledgeConfidenceEngine,
+  type KnowledgeDocument,
+} from '../../lib/voice-runtime/intelligence/KnowledgeConfidenceEngine.js';
+import { executeHttpTool } from '../../lib/voice-runtime/HttpToolExecutor.js';
+import type { AgentConfiguration } from '../types/agent.js';
+import { getAiConsent } from './settingService.js';
 
 export type RuntimeProvider = 'GoogleGemini' | 'OpenAI' | 'Claude';
-export type RuntimeNodeType = 'start' | 'llm' | 'prompt' | 'question' | 'condition' | 'switch' | 'memory' | 'end';
+export type RuntimeNodeType =
+  | 'start'
+  | 'llm'
+  | 'prompt'
+  | 'question'
+  | 'condition'
+  | 'switch'
+  | 'memory'
+  | 'end'
+  | 'knowledge'
+  | 'tool';
 
 type RuntimeConfig = Record<string, Prisma.JsonValue>;
 
@@ -27,6 +45,19 @@ interface RuntimeEdge extends Record<string, Prisma.JsonValue> {
  * This snapshot is persisted inside Session.metadata, so its public type deliberately satisfies
  * Prisma.JsonObject. Keeping the runtime state JSON-safe prevents test-only casts from hiding a
  * production persistence mismatch and makes the session snapshot portable across workers.
+ *
+ * Deliberately NOT extended with new top-level fields for tenantId/agentId/knowledgeDocuments
+ * (added in Onda 5 for `knowledge` node support) — every field here must be a required, always
+ * JSON-safe (non-`undefined`) value, because `extends Record<string, Prisma.JsonValue>` and an
+ * optional property (`foo?: T`, whose type TypeScript always widens to `T | undefined`) cannot
+ * coexist on one interface. A genuinely new REQUIRED field is equally unworkable here: both
+ * `__tests__/telephonyService.test.ts` and `__tests__/workflowRuntimeService.test.ts` (Agente 08,
+ * out of scope for this agent) build `WorkflowRuntimeState`/`Session.metadata` fixtures that
+ * predate Onda 5 and do not set it, and TypeScript's spread-of-`Partial<T>` inference makes a
+ * required-but-fixture-omitted field surface as `T | undefined` there too. So call-scoped,
+ * JSON-safe-but-not-structurally-required data added after the original 9 fields below lives
+ * inside the existing required `variables` map instead, under the reserved `__runtime*` keys —
+ * see `getRuntimeTenantId`/`getRuntimeAgentId`/`getRuntimeKnowledgeDocuments` further down.
  */
 export interface WorkflowRuntimeState extends Record<string, Prisma.JsonValue> {
   workflowId: string;
@@ -38,6 +69,37 @@ export interface WorkflowRuntimeState extends Record<string, Prisma.JsonValue> {
   ended: boolean;
   nodes: RuntimeNode[];
   edges: RuntimeEdge[];
+}
+
+// Reserved `variables` keys carrying call-scoped runtime context (see the `WorkflowRuntimeState`
+// doc comment above for why these live inside `variables` instead of as top-level fields). Not
+// namespaced against a user typing the literal string in a Studio prompt/condition — an
+// astronomically unlikely collision, and even then the leaked value (a tenant id) is not a
+// secret — but kept clearly distinguishable from ordinary session variables regardless.
+const RUNTIME_TENANT_ID_VAR = '__runtimeTenantId';
+const RUNTIME_AGENT_ID_VAR = '__runtimeAgentId';
+const RUNTIME_KNOWLEDGE_DOCS_VAR = '__runtimeKnowledgeDocumentsJson';
+
+function getRuntimeTenantId(state: WorkflowRuntimeState): string {
+  return state.variables[RUNTIME_TENANT_ID_VAR] ?? '';
+}
+
+function getRuntimeAgentId(state: WorkflowRuntimeState): string | null {
+  return state.variables[RUNTIME_AGENT_ID_VAR] || null;
+}
+
+function getRuntimeKnowledgeDocuments(state: WorkflowRuntimeState): KnowledgeDocument[] {
+  const raw = state.variables[RUNTIME_KNOWLEDGE_DOCS_VAR];
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as KnowledgeDocument[]) : [];
+  } catch {
+    // A corrupted/hand-edited session snapshot must degrade to "no documents", never throw
+    // mid-call — same fail-safe posture as `toStudioGraph` treating a malformed nodes/edges Json
+    // column as `[]` in `initializeWorkflowRuntime`.
+    return [];
+  }
 }
 
 export interface PreparedWorkflowTurn {
@@ -59,14 +121,23 @@ const SUPPORTED_TYPES = new Set<RuntimeNodeType>([
   'switch',
   'memory',
   'end',
+  'knowledge',
+  'tool',
 ]);
 
+// 'knowledge' and 'tool' were unsupported through Onda 4 (see git history for the removed
+// UNSUPPORTED_REASON entries) — as of Onda 5 they are executed for real
+// (`applyKnowledgeNode`/`executeToolNodeAsync` below); see
+// docs/patterns/workflow-execution-contract.md §2 for the up-to-date executable list. 'voice' and
+// 'human_handoff' remain blocked: both require a change to `telephonyService.ts` (Agente 05,
+// exclusive owner) that is out of this round's scope — see
+// .agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md.
 const UNSUPPORTED_REASON: Partial<Record<string, string>> = {
   voice: 'A telefonia de produção usa Twilio <Say>/<Gather>; o seletor de voz do Studio ainda não controla esse caminho.',
-  knowledge: 'O nó Knowledge ainda não está ligado a uma base RAG tenant-scoped no runtime de telefonia.',
-  tool: 'O nó Tool não é ativado sem um executor allowlisted/tenant-scoped para evitar SSRF e vazamento de credenciais.',
   human_handoff: 'A transferência humana ainda não possui bridge de telefonia validada para produção.',
 };
+
+const SUPPORTED_TOOL_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 function asRecord(value: unknown): RuntimeConfig {
   // Workflow config is persisted in a Prisma Json column before it reaches the runtime. This cast
@@ -87,6 +158,10 @@ function asNumber(value: unknown, fallback: number): number {
 
 function isTruthy(value: unknown): boolean {
   return value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
+}
+
+function asOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function toStudioGraph(nodes: unknown, edges: unknown): { nodes: StudioNode[]; edges: StudioEdge[] } {
@@ -157,6 +232,18 @@ export function validateRuntimeCompatibility(nodes: StudioNode[], edges: StudioE
         type: 'error',
         message: 'Provedor LLM não suportado pelo runtime. Use Gemini, OpenAI ou Claude.',
       });
+    }
+
+    if (type === 'tool') {
+      const method = asString(config.method).toUpperCase() || 'GET';
+      if (!SUPPORTED_TOOL_METHODS.has(method)) {
+        issues.push({
+          id: `err-runtime-tool-method-${node.id}`,
+          nodeId: node.id,
+          type: 'error',
+          message: `Método HTTP '${method}' não é suportado pelo executor de Tool. Use GET, POST, PUT, PATCH ou DELETE.`,
+        });
+      }
     }
 
     if (type === 'condition') {
@@ -345,6 +432,232 @@ function routeSwitch(state: WorkflowRuntimeState, node: RuntimeNode): RuntimeEdg
   return orderedOutgoing(state, node.id).find((edge) => edge.isFallback) ?? null;
 }
 
+/**
+ * `evaluateKnowledge` is a keyword-confidence lookup over whatever documents were baked into the
+ * state snapshot at call start, NOT a real vector/embeddings search — see
+ * `KnowledgeConfidenceEngine.ts`'s own "RAG Simulator" comment and
+ * `docs/patterns/workflow-execution-contract.md` §2. This function must never present a
+ * low-confidence/no-match result as a fact (AGENTS.md §14) and must never invent a result for a
+ * `database` name that matches no configured document.
+ *
+ * The query is always the caller's most recent utterance (`variables.lastUserText`) — the Studio
+ * config table for `knowledge` (`ragTopK`, `minScoreThreshold`, `searchStrategy`,
+ * `autoChunkSize`) has no field to pick a different query source today. `ragTopK`/
+ * `searchStrategy`/`autoChunkSize` are accepted by the Studio schema but are NOT honored here:
+ * the engine returns a single best match, not a ranked top-K over chunked documents. Only
+ * `minScoreThreshold` is honored, as an additional (never looser) floor on top of the engine's
+ * own fixed threshold.
+ */
+function applyKnowledgeNode(state: WorkflowRuntimeState, node: RuntimeNode): void {
+  const query = state.variables.lastUserText ?? '';
+  const requestedDatabase = asString(node.config.database);
+  const documents = getRuntimeKnowledgeDocuments(state);
+  const pool = requestedDatabase
+    ? documents.filter((doc) => normalizeComparable(doc.name) === normalizeComparable(requestedDatabase))
+    : documents;
+
+  const result = knowledgeConfidenceEngine.evaluateKnowledge(query, pool);
+  const minScoreThreshold = asNumber(node.config.minScoreThreshold, 0);
+  const isLowConfidence = result.isLowConfidence || result.confidence < minScoreThreshold;
+
+  // Fixed variable names (no `variableToSave` field exists for `knowledge` in the Studio config
+  // table) — a downstream `prompt`/`question`/`condition` node reads these via the existing
+  // `{{variable}}` template mechanism (see renderTemplate). Both a generic "most recent lookup"
+  // set and a per-node-id set are written so multiple knowledge nodes in one graph don't clobber
+  // each other's result.
+  state.variables.knowledge_result = result.snippetUsed;
+  state.variables.knowledge_document = result.document;
+  state.variables.knowledge_confidence = String(result.confidence);
+  state.variables.knowledge_is_low_confidence = String(isLowConfidence);
+  state.variables[`knowledge_${node.id}_result`] = result.snippetUsed;
+  state.variables[`knowledge_${node.id}_is_low_confidence`] = String(isLowConfidence);
+}
+
+// The Studio's `tool` node registry persists `headers` as a JSON-encoded string in
+// `data.config.headers` (see `store/useStudioStore.ts`'s `tool` node `defaultConfig`, e.g.
+// `'{"Authorization": "Bearer token_secret"}'`) — every workflow published through the Inspector
+// carries it that way, never as a live object. Parsing it here (instead of requiring an object) is
+// what actually makes a configured header like `Authorization` reach the request; accepting an
+// object too keeps this tolerant of a future Studio change without another silent breakage.
+function toToolHeaders(value: unknown, variables: Record<string, string>): Record<string, string> {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return {};
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return {};
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof raw === 'string') headers[key] = renderTemplate(raw, variables);
+  }
+  return headers;
+}
+
+/**
+ * Mid-conversation `tool` fallback. `prepareWorkflowTurn` is a synchronous function on purpose —
+ * `telephonyService.ts` (Agente 05, out of scope here) calls it without `await`, and
+ * `__tests__/workflowRuntimeService.test.ts` (Agente 08, out of scope here) asserts its return
+ * value synchronously — so a `tool` node reached from that path cannot perform a real network
+ * call without either breaking that call site or blocking the event loop for every other
+ * concurrent call (unacceptable on a "high volume" voice platform). Real HTTP execution is only
+ * available at call start today, via `advanceUntilInteractionAsync`/`initializeWorkflowRuntime`
+ * (see the module comment above `advanceUntilInteractionAsync`). Reached later, `tool` behaves
+ * exactly like a live tool failure: it degrades to the same `tool_ok`/`tool_error` fallback path
+ * a real timeout or blocked URL would take, never a fabricated success and never an unhandled
+ * exception up into `telephonyService.ts`. See
+ * .agents/handoffs/onda-5/04-para-05-tool-node-async-continuation.md for the proposed follow-up.
+ */
+function applyToolFallback(state: WorkflowRuntimeState, node: RuntimeNode, reason: string): void {
+  state.variables.tool_ok = 'false';
+  state.variables.tool_status = reason;
+  state.variables.tool_error = reason;
+  delete state.variables.tool_result;
+  state.variables[`tool_${node.id}_ok`] = 'false';
+  state.variables[`tool_${node.id}_error`] = reason;
+}
+
+/**
+ * Real execution path for a `tool` node — only reachable today from `advanceUntilInteractionAsync`
+ * (i.e. before the call's first `prompt`/`question`). SSRF/timeout/retry defense lives in
+ * `executeHttpTool` (`lib/voice-runtime/HttpToolExecutor.ts`), reusing
+ * `isPrivateOrReservedHost` from `src/validators/index.ts` — never re-implemented here.
+ *
+ * Gated on the same tenant-level external-data-egress consent already required for AI providers
+ * (`getAiConsent`, AGENTS.md §16) before the call fires: a `tool` node sends caller/lead fields
+ * (`{{from}}`, `{{to}}`, workflow variables) to a tenant-configured URL, an external destination
+ * for personal data exactly like the AI Gateway's, and today the only consent primitive this
+ * platform has is that one — reusing it here is a real check now rather than none while a
+ * dedicated "tool endpoint" consent flag is decided as a separate product change. Checked fresh on
+ * every call (never cached in the immutable per-call state), fail-closed on the lookup itself
+ * erroring (mirrors `requireAiProviderConsent`'s middleware, which returns 503 rather than
+ * treating a DB error as "no consent") — never fabricate consent, never let an outage silently
+ * downgrade to "allowed".
+ */
+async function executeToolNodeAsync(state: WorkflowRuntimeState, node: RuntimeNode): Promise<void> {
+  const tenantId = getRuntimeTenantId(state);
+  try {
+    const consent = await getAiConsent(tenantId);
+    if (!consent.granted) {
+      logger.warn('Workflow tool node blocked: tenant has not granted external data consent', {
+        workflowId: state.workflowId,
+        tenantId,
+        nodeId: node.id,
+      });
+      applyToolFallback(state, node, 'consent_not_granted');
+      return;
+    }
+  } catch (error) {
+    logger.error('Failed to verify tenant consent before executing workflow tool node', {
+      workflowId: state.workflowId,
+      tenantId,
+      nodeId: node.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    applyToolFallback(state, node, 'consent_check_unavailable');
+    return;
+  }
+
+  const endpoint = renderTemplate(asString(node.config.endpoint), state.variables);
+  const bodyPayload = typeof node.config.bodyPayload === 'string'
+    ? renderTemplate(node.config.bodyPayload, state.variables)
+    : node.config.bodyPayload;
+
+  const result = await executeHttpTool({
+    method: asString(node.config.method) || 'GET',
+    endpoint,
+    headers: toToolHeaders(node.config.headers, state.variables),
+    bodyPayload,
+    timeoutMs: asOptionalNumber(node.config.timeoutMs),
+    retryLimit: asOptionalNumber(node.config.retryLimit),
+  });
+
+  if (result.ok) {
+    state.variables.tool_ok = 'true';
+    state.variables.tool_status = String(result.status ?? '');
+    state.variables.tool_result = result.body ?? '';
+    delete state.variables.tool_error;
+    state.variables[`tool_${node.id}_ok`] = 'true';
+    state.variables[`tool_${node.id}_result`] = result.body ?? '';
+    logger.info('Workflow tool node executed successfully', {
+      workflowId: state.workflowId,
+      tenantId: getRuntimeTenantId(state),
+      agentId: getRuntimeAgentId(state),
+      nodeId: node.id,
+      status: result.status,
+    });
+    return;
+  }
+
+  logger.warn('Workflow tool node failed; continuing the call on the fallback path', {
+    workflowId: state.workflowId,
+    tenantId: getRuntimeTenantId(state),
+    agentId: getRuntimeAgentId(state),
+    nodeId: node.id,
+    reason: result.error,
+  });
+  applyToolFallback(state, node, result.error ?? 'unknown_error');
+}
+
+async function loadAgentKnowledgeDocuments(tenantId: string, agentId: string): Promise<KnowledgeDocument[]> {
+  try {
+    // Tenant-scoped lookup: `agentRepository.getAgent` only returns a row when `agentId` actually
+    // belongs to `tenantId`, so a mismatched/foreign agentId yields no documents rather than
+    // another tenant's knowledge base — this is the tenant-isolation guarantee for `knowledge`.
+    const agent = await agentRepository.getAgent(agentId, tenantId);
+    if (!agent) return [];
+    const config = (agent.configuration as unknown as AgentConfiguration) || {};
+    return Array.isArray(config.knowledge) ? config.knowledge : [];
+  } catch (error) {
+    logger.error('Failed to load agent knowledge documents for workflow runtime', {
+      tenantId,
+      agentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+/**
+ * Executes every node type that has no I/O side effect requiring `await` — shared by both
+ * `advanceUntilInteraction` (sync, every phone turn) and `advanceUntilInteractionAsync` (async,
+ * call start only) so `condition`/`switch`/`memory`/`llm`/`knowledge` semantics can never drift
+ * between the two entry points. Returns the id of the next node to visit, or `null` to stop.
+ * Caller has already handled `prompt`/`question`/`end`/`tool` before reaching this function.
+ */
+function advanceDeterministicNode(state: WorkflowRuntimeState, node: RuntimeNode): string | null {
+  if (node.type === 'llm') {
+    const provider = mapRuntimeProvider(node.config.provider);
+    if (provider) state.preferredProvider = provider;
+    return selectDefaultEdge(state, node.id)?.target ?? null;
+  }
+
+  if (node.type === 'memory') {
+    applyMemoryNode(node.config, state.variables);
+    return selectDefaultEdge(state, node.id)?.target ?? null;
+  }
+
+  if (node.type === 'condition') {
+    const matched = evaluateCondition(node.config, state.variables);
+    return selectHandle(state, node.id, matched ? 'out-0' : 'out-1')?.target ?? null;
+  }
+
+  if (node.type === 'switch') {
+    return routeSwitch(state, node)?.target ?? null;
+  }
+
+  if (node.type === 'knowledge') {
+    applyKnowledgeNode(state, node);
+    return selectDefaultEdge(state, node.id)?.target ?? null;
+  }
+
+  return selectDefaultEdge(state, node.id)?.target ?? null;
+}
+
 function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string | null): WorkflowRuntimeState {
   let currentId = fromNodeId;
   const visited = new Set<string>();
@@ -377,31 +690,67 @@ function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string
       return state;
     }
 
-    if (node.type === 'llm') {
-      const provider = mapRuntimeProvider(node.config.provider);
-      if (provider) state.preferredProvider = provider;
+    if (node.type === 'tool') {
+      applyToolFallback(state, node, 'tool_unavailable_mid_call');
       currentId = selectDefaultEdge(state, node.id)?.target ?? null;
       continue;
     }
 
-    if (node.type === 'memory') {
-      applyMemoryNode(node.config, state.variables);
+    currentId = advanceDeterministicNode(state, node);
+  }
+
+  state.ended = true;
+  state.currentNodeId = null;
+  return state;
+}
+
+/**
+ * Async twin of `advanceUntilInteraction`, used only by `initializeWorkflowRuntime` (i.e. the
+ * segment of the graph between `start` and the call's first `prompt`/`question`). This is the
+ * only place a `tool` node performs a real HTTP call today — see `applyToolFallback`'s doc
+ * comment for exactly why the synchronous per-turn path cannot do the same without either
+ * breaking `telephonyService.ts`'s existing (non-`await`ed) call to `prepareWorkflowTurn` or
+ * blocking the event loop for every other concurrent call.
+ */
+async function advanceUntilInteractionAsync(state: WorkflowRuntimeState, fromNodeId: string | null): Promise<WorkflowRuntimeState> {
+  let currentId = fromNodeId;
+  const visited = new Set<string>();
+
+  while (currentId) {
+    if (visited.has(currentId)) {
+      state.ended = true;
+      state.currentNodeId = null;
+      logger.error('Workflow runtime stopped an unexpected cycle', { workflowId: state.workflowId, nodeId: currentId });
+      return state;
+    }
+    visited.add(currentId);
+
+    const node = nodeById(state, currentId);
+    if (!node) {
+      state.ended = true;
+      state.currentNodeId = null;
+      logger.error('Workflow runtime could not resolve node', { workflowId: state.workflowId, nodeId: currentId });
+      return state;
+    }
+
+    if (node.type === 'prompt' || node.type === 'question') {
+      state.currentNodeId = node.id;
+      return state;
+    }
+
+    if (node.type === 'end') {
+      state.ended = true;
+      state.currentNodeId = node.id;
+      return state;
+    }
+
+    if (node.type === 'tool') {
+      await executeToolNodeAsync(state, node);
       currentId = selectDefaultEdge(state, node.id)?.target ?? null;
       continue;
     }
 
-    if (node.type === 'condition') {
-      const matched = evaluateCondition(node.config, state.variables);
-      currentId = selectHandle(state, node.id, matched ? 'out-0' : 'out-1')?.target ?? null;
-      continue;
-    }
-
-    if (node.type === 'switch') {
-      currentId = routeSwitch(state, node)?.target ?? null;
-      continue;
-    }
-
-    currentId = selectDefaultEdge(state, node.id)?.target ?? null;
+    currentId = advanceDeterministicNode(state, node);
   }
 
   state.ended = true;
@@ -434,6 +783,13 @@ function closingMessage(state: WorkflowRuntimeState): string {
 export async function initializeWorkflowRuntime(
   tenantId: string,
   initialVariables: Record<string, unknown> = {},
+  // Optional today because `telephonyService.ts` (Agente 05) does not pass it yet at its two
+  // call sites (`startCall`/`startOutboundCall`, both of which already have the resolved `Agent`
+  // in scope) — see .agents/handoffs/onda-5/04-para-05-pass-agentid-to-workflow-runtime.md.
+  // Without it, `knowledge` nodes execute honestly with zero documents (never a fabricated
+  // match) instead of failing; adding the argument is additive and does not change any existing
+  // caller's behavior.
+  agentId?: string,
 ): Promise<WorkflowRuntimeState | null> {
   const workflow = await workflowRepository.findActiveWorkflowForTenant(tenantId);
   if (!workflow) return null;
@@ -452,15 +808,22 @@ export async function initializeWorkflowRuntime(
   const start = nodes.find((node) => node.type === 'start');
   if (!start) return null;
 
+  const knowledgeDocuments = agentId ? await loadAgentKnowledgeDocuments(tenantId, agentId) : [];
+
   const state: WorkflowRuntimeState = {
     workflowId: workflow.id,
     version: workflow.version,
     currentNodeId: start.id,
-    variables: Object.fromEntries(
-      Object.entries(initialVariables)
-        .filter(([, value]) => value !== null && value !== undefined)
-        .map(([key, value]) => [key, String(value)]),
-    ),
+    variables: {
+      ...Object.fromEntries(
+        Object.entries(initialVariables)
+          .filter(([, value]) => value !== null && value !== undefined)
+          .map(([key, value]) => [key, String(value)]),
+      ),
+      [RUNTIME_TENANT_ID_VAR]: tenantId,
+      ...(agentId ? { [RUNTIME_AGENT_ID_VAR]: agentId } : {}),
+      [RUNTIME_KNOWLEDGE_DOCS_VAR]: JSON.stringify(knowledgeDocuments),
+    },
     preferredProvider: 'GoogleGemini',
     retries: {},
     ended: false,
@@ -468,7 +831,7 @@ export async function initializeWorkflowRuntime(
     edges: compileEdges(edges),
   };
 
-  return advanceUntilInteraction(state, start.id);
+  return advanceUntilInteractionAsync(state, start.id);
 }
 
 export function getWorkflowOpeningQuestion(state: WorkflowRuntimeState | null): string | null {

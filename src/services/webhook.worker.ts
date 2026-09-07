@@ -4,6 +4,8 @@ import { getRedisConnectionOptions } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { isPrivateOrReservedHost } from '../validators/index.js';
 import { WebhookPayload } from './webhook.service.js';
+import { findActiveSigningSecretHash } from './webhookEndpointService.js';
+import { recordDeliveryResult } from '../repositories/webhookEndpointRepository.js';
 
 /** Matches the 5s timeout published in docs/webhooks/index.md. */
 const DELIVERY_TIMEOUT_MS = 5000;
@@ -31,12 +33,32 @@ function isSafeWebhookUrl(url: string): boolean {
   return !isPrivateOrReservedHost(parsed.hostname);
 }
 
+/** Thrown when a job carries an `endpointId` that no longer resolves to an active endpoint
+ * (deleted or deactivated between enqueue and this delivery attempt) — see signBody below. */
+class WebhookEndpointGoneError extends Error {}
+
 /**
  * Signs the exact bytes we are about to send. Receivers recompute this HMAC over the raw request
  * body, so the string signed here and the string sent must be the same one — re-serializing the
  * payload for the request would risk a different key order and a signature that never verifies.
+ *
+ * Per-tenant endpoints (job carries `endpointId`) sign with that endpoint's own secret, resolved
+ * fresh from webhookEndpointService on every attempt — never a single global secret, and never the
+ * secret captured at enqueue time (a rotation/deletion mid-retry must take effect immediately, see
+ * webhookEndpointService.findActiveSigningSecretHash). Legacy calls with no `endpointId` (a
+ * `targetUrl` passed directly to `webhookService.dispatch`, or the deployment-wide
+ * WEBHOOK_URL/TEST_WEBHOOK_URL fallback) keep signing with the single deployment-wide
+ * WEBHOOK_SIGNING_SECRET env var, exactly as before — no per-tenant endpoint exists to own a
+ * secret for that path.
  */
-function signBody(body: string): string | null {
+async function signBody(body: string, endpointId?: string): Promise<string | null> {
+  if (endpointId) {
+    const secretHash = await findActiveSigningSecretHash(endpointId);
+    if (!secretHash) {
+      throw new WebhookEndpointGoneError(`Webhook endpoint ${endpointId} no longer exists or is inactive`);
+    }
+    return createHmac('sha256', secretHash).update(body).digest('hex');
+  }
   const secret = process.env.WEBHOOK_SIGNING_SECRET;
   if (!secret) return null;
   return createHmac('sha256', secret).update(body).digest('hex');
@@ -47,8 +69,8 @@ export function startWebhookWorker() {
 
   const worker = new Worker(
     'webhooks',
-    async (job: Job<{ url: string; payload: WebhookPayload }>) => {
-      const { url, payload } = job.data;
+    async (job: Job<{ url: string; payload: WebhookPayload; endpointId?: string }>) => {
+      const { url, payload, endpointId } = job.data;
       logger.debug(`[WebhookWorker] Processing job ${job.id} for tenant ${payload.tenantId}`);
 
       if (!isSafeWebhookUrl(url)) {
@@ -69,7 +91,22 @@ export function startWebhookWorker() {
         'User-Agent': 'BirthVoicesHub-Webhook/1.0',
       };
 
-      const signature = signBody(body);
+      let signature: string | null;
+      try {
+        signature = await signBody(body, endpointId);
+      } catch (error) {
+        if (error instanceof WebhookEndpointGoneError) {
+          // The endpoint was deleted/deactivated after this job was enqueued — there is no secret
+          // left to sign with and no admin left who configured this destination. Same reasoning
+          // as the SSRF check above: this is categorically undeliverable, not a transient failure,
+          // so fail immediately instead of burning the retry budget against a target that will
+          // never become valid again.
+          logger.error(`[WebhookWorker] ${error.message} (job ${job.id}) — failing without retry.`);
+          throw new UnrecoverableError(error.message);
+        }
+        throw error;
+      }
+
       if (signature) {
         headers['x-birthvoices-signature'] = signature;
       } else {
@@ -91,6 +128,14 @@ export function startWebhookWorker() {
         }
 
         logger.info(`[WebhookWorker] Successfully delivered event ${payload.type} to ${url}`);
+        if (endpointId) {
+          // Best-effort bookkeeping only — must never fail (or slow down) a delivery that already
+          // succeeded. This is a real Prisma write against `TenantWebhookEndpoint` (see
+          // .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint-pronto.md); any failure
+          // (e.g. the endpoint was deleted between the attempt and this write) is swallowed here
+          // for exactly that reason.
+          recordDeliveryResult(endpointId, 'delivered').catch(() => undefined);
+        }
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`[WebhookWorker] Failed to deliver event ${payload.type} to ${url}. Error: ${msg}`);
@@ -102,6 +147,13 @@ export function startWebhookWorker() {
 
   worker.on('failed', (job, err) => {
     logger.error(`[WebhookWorker] Job ${job?.id} failed. Reason: ${err.message}`);
+    const endpointId = job?.data?.endpointId;
+    const attempts = job?.opts?.attempts ?? 1;
+    if (endpointId && job && job.attemptsMade >= attempts) {
+      // Final failure (retry budget exhausted) — best-effort bookkeeping, same "never fail on
+      // recording" reasoning as the success path above.
+      recordDeliveryResult(endpointId, 'failed').catch(() => undefined);
+    }
   });
 
   logger.info('[WebhookWorker] Started listening for webhook events');
