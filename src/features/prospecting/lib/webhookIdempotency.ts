@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Redis } from 'ioredis';
-import { getRedisUrl } from '../../../lib/env.js';
+import { getRedisUrl, getRedisRetryStrategy } from '../../../lib/env.js';
 import { logger } from '../../../lib/logger.js';
 
 /**
@@ -29,6 +29,7 @@ function getClient(): Redis {
       maxRetriesPerRequest: 1,
       connectTimeout: 2000,
       commandTimeout: 2000,
+      retryStrategy: getRedisRetryStrategy(),
     });
     redisClient.on('error', (err: Error) => {
       logger.error('Webhook idempotency Redis client error', err.message);

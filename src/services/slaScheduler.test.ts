@@ -28,6 +28,7 @@ vi.mock('ioredis', () => ({
 vi.mock('../lib/env.js', () => ({
   getRedisConnectionOptions: () => ({ host: 'localhost', port: 6379 }),
   getRedisUrl: () => 'redis://localhost:6379',
+  getRedisRetryStrategy: () => (times: number) => Math.min(times * 500, 10_000),
 }));
 
 const mockCheckPlatformHealth = vi.fn();

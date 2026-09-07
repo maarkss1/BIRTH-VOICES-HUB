@@ -2,12 +2,13 @@ import { Redis } from 'ioredis';
 import { Queue, Worker } from 'bullmq';
 import { createAuditLog } from '../repositories/auditLogRepository.js';
 import { logger } from '../lib/logger.js';
-import { getRedisUrl } from '../lib/env.js';
+import { getRedisUrl, getRedisRetryStrategy } from '../lib/env.js';
 
 const redisUrl = getRedisUrl();
 // BullMQ requires maxRetriesPerRequest: null on its connection; enqueue failures are still caught
 // below so a Redis outage degrades to "audit log skipped" rather than blocking the request path.
-const connection = new Redis(redisUrl, { maxRetriesPerRequest: null, connectTimeout: 2000 });
+// retryStrategy caps reconnect attempts at 10s apart so a real outage doesn't log-storm.
+const connection = new Redis(redisUrl, { maxRetriesPerRequest: null, connectTimeout: 2000, retryStrategy: getRedisRetryStrategy() });
 connection.on('error', (err) => logger.error('Audit Redis connection error', err.message));
 
 const auditQueue = new Queue('auditLogs', { connection });

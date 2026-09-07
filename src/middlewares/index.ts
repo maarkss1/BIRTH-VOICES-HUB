@@ -4,7 +4,7 @@ import { verifyToken, TokenPayload } from '../lib/auth-tokens.js';
 import { refreshSession } from '../services/authService.js';
 import { setCookie, ACCESS_TOKEN_MAX_AGE_MS } from '../lib/cookies.js';
 import { authenticateApiKey, isApiKeyFormat } from '../services/apiKeyService.js';
-import { getRedisUrl } from '../lib/env.js';
+import { getRedisUrl, getRedisRetryStrategy } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 
 export const csrfProtection = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -71,7 +71,7 @@ function setAccessTokenCookie(res: express.Response, token: string) {
 // (never blocks an otherwise-valid authenticated request) — same tradeoff server.ts's limiters make.
 const API_KEY_RATE_LIMIT = 120;
 const API_KEY_RATE_WINDOW_SECONDS = 60;
-const rateLimitRedis = new Redis(getRedisUrl(), { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
+const rateLimitRedis = new Redis(getRedisUrl(), { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000, retryStrategy: getRedisRetryStrategy() });
 rateLimitRedis.on('error', (err) => logger.error('API key rate limiter Redis error', err));
 
 async function isApiKeyRateLimited(apiKeyId: string): Promise<boolean> {
