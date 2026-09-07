@@ -23,6 +23,11 @@ env:
   ALLOWED_ORIGINS: "http://127.0.0.1:3000,http://localhost:3000"
   JWT_SECRET: "ci_jwt_secret_do_not_use_in_production"
   REFRESH_TOKEN_SECRET: "ci_refresh_secret_do_not_use_in_production"
+  # Lets e2e/atlasgr-webhook.spec.ts exercise the real signature-check path (missing/wrong secret
+  # -> 401) instead of the "integration not configured" fallback (-> 503) — matching what a real
+  # deployment (which does have this configured) actually enforces. Not a real secret; CI never
+  # talks to the real AtlasGR CRM.
+  ATLASGR_WEBHOOK_SECRET: "ci_atlasgr_webhook_secret_do_not_use_in_production"
   NODE_ENV: "test"
 
 jobs:
