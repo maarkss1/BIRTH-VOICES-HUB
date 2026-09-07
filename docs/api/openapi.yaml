@@ -87,6 +87,34 @@ components:
           type: string
           format: date-time
 
+    AuthenticatedUser:
+      type: object
+      description: >
+        The shape returned by `GET /auth/me`: the JWT's `TokenPayload` claims (`id`, `email`,
+        `role`, `tenantId` — notably narrower than `User`, e.g. no `companyName`/`createdAt`)
+        plus `permissions`, resolved live against the database rather than trusted from the
+        token (see `src/controllers/auth.controller.ts`). `permissions` is UX-only information
+        for the client to decide what to show — every permission-gated action is still enforced
+        authoritatively server-side.
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, user]
+        tenantId:
+          type: string
+          format: uuid
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Effective permission keys for the caller's role, resolved live (see `getPermissionsForRoleName`).
+
     Organization:
       type: object
       properties:
@@ -273,6 +301,38 @@ components:
           type: string
           nullable: true
 
+    AuditLogEntry:
+      type: object
+      description: >
+        One entry from the tenant's audit trail (`writeAuditLog()` writes these; see
+        `src/services/auditLogService.ts`). `action` is a free-form event code, not a closed
+        enum — new call sites can introduce new values (e.g. `USER_CREATE_BY_ADMIN`,
+        `USER_LOGIN`, `CALL_LOG_CREATE`) without a spec change.
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Id of the user who performed the action, if the action was user-initiated.
+        actorEmail:
+          type: string
+          format: email
+          nullable: true
+          description: Email of the acting user at read time, resolved via a join; `null` if the user no longer exists.
+        action:
+          type: string
+          description: Machine-readable event code (e.g. `USER_LOGIN`, `CALL_LOG_CREATE`).
+        details:
+          type: object
+          description: Free-form JSON payload specific to `action`.
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+
     ErrorResponse:
       type: object
       properties:
@@ -310,6 +370,7 @@ tags:
   - name: Knowledge
   - name: Organizations
   - name: Users
+  - name: AuditLog
   - name: AI
   - name: Observability
   - name: Telephony
@@ -414,7 +475,7 @@ paths:
                 type: object
                 properties:
                   user:
-                    $ref: '#/components/schemas/User'
+                    $ref: '#/components/schemas/AuthenticatedUser'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1918,6 +1979,57 @@ paths:
                     type: string
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /audit-log:
+    get:
+      tags: [AuditLog]
+      summary: List the tenant's audit trail
+      description: >
+        Requires the `admin` role — same authorization level as `GET /users`, since audit
+        entries can reveal sensitive operational history. Tenant-scoped and paginated; ordered
+        newest-first.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number. Non-numeric or out-of-range values fall back to `1`.
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Entries per page, clamped to `[1, 100]`. Non-numeric values fall back to the default.
+      responses:
+        '200':
+          description: Page of audit log entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLogEntry'
+                  page:
+                    type: integer
+                  pageSize:
+                    type: integer
+                  total:
+                    type: integer
+                  totalPages:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   /chat:
     post:
