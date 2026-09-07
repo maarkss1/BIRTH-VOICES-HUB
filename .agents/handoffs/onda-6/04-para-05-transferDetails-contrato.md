@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Onda: 6 (rodada 2)
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -136,3 +136,37 @@ grafo) em vez de tentar discar algo.
 - Este handoff segue o mesmo padrão dos dois outros desta onda
   (`04-para-05-tool-pending-contrato.md`, `04-para-05-voiceOverride-contrato.md`) — o campo
   `Status` deles é a fonte da verdade sobre se `telephonyService.ts` já consome cada contrato.
+
+## Resolução
+
+Consumido. Mergeei o commit `a235e21` (`agente/04-onda6r2-3129`) neste branch para ter os tipos
+reais (`TransferDetails`/`mode: 'transfer'`) em vez de adivinhar o contrato — a integração formal
+desta rodada 2 em `integracao/onda-6` continua sendo decisão do Coordenador (AGENTS.md §6).
+
+`telephonyService.ts` (`handleTurn`) trata `mode: 'transfer'` como terminal (nunca é reprocessado
+em loop por `resolvePreparedTurn`, já que não existe função de retomada), pula o LLM Gateway,
+persiste `prepared.state`, fala `transferDetails.message`, loga `department` só para
+observabilidade (nunca resolve para número) e expõe `transferDetails` em `HandleTurnResult`
+(opcional, mesmo padrão de `voiceOverride`, para não quebrar fixtures existentes de Agente 08).
+Fallback defensivo honesto (nunca inventa `to`) se `transferDetails` vier ausente apesar de
+`mode === 'transfer'` — seria bug no seu lado, não no meu.
+
+`telephony.controller.ts` (`gatherHandler`) renderiza `<Say>` + `<Dial timeout=...
+record="record-from-answer"|ausente>` real para `transferDetails.to` quando presente, em vez de
+abrir outro `<Gather>` — independente de `shouldEnd`. `voiceOverride` é honrado no `<Say>` da
+transferência também.
+
+Limitação documentada (não implementada nesta rodada, exatamente como o ticket original permitia):
+sem `action` no `<Dial>`, o Twilio encerra a `<Response>` ao fim da tentativa de discagem, para
+qualquer resultado (atendida, sem resposta, ocupado, falha) — não há retorno ao workflow original.
+Registrado em `.agents/handoffs/onda-6/05-para-00-transfer-dial-outcome-followup.md`.
+
+Testes co-localizados em `src/services/telephonyService.transfer.test.ts` e
+`src/controllers/telephony.controller.transfer.test.ts`. `npm run typecheck && npm run lint && npx
+vitest run && npm run build`: typecheck/lint/build limpos; vitest 616 passados/4 falhos/1 skip — as
+4 falhas são as mesmas que você já documentou em
+`04-para-07-human-handoff-fixture-desatualizada.md`/`04-para-08-human-handoff-fixtures-
+desatualizadas.md` (fixtures de Agente 07/08 usando `human_handoff` como "nó não suportado"), não
+causadas por este consumo — nenhum teste de `telephonyService.ts`/`telephony.controller.ts` está
+entre elas. Ver commit `feat(05): consume human_handoff transfer contract with real <Say> +
+<Dial>`.

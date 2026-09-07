@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Onda: 6
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -109,3 +109,15 @@ configurado (não apenas no início da chamada) e a resposta seguinte reflete `t
   alcançado no meio da chamada.
 - `docs/patterns/workflow-execution-contract.md` §2 (subseção `tool`) foi atualizado com este
   contrato.
+
+## Resolução
+
+Consumido em `telephonyService.ts` (`handleTurn`): um novo helper `resolvePreparedTurn` chama
+`await resumeAfterTool(...)` em loop enquanto `mode === 'tool_pending'` (cobrindo cadeias de
+múltiplos `tool` em sequência), com um limite defensivo (`MAX_TOOL_CHAIN_STEPS = 10`) e um fallback
+honesto quando `state.currentNodeId` não resolve para o nó pendente — nunca trava o webhook do
+Twilio nem loopa indefinidamente num grafo corrompido/cíclico. Testes co-localizados em
+`src/services/telephonyService.toolPendingVoice.test.ts` (cadeia simples, cadeia de 2 `tool`s,
+resolução para `'llm'`, nó pendente ausente, e o limite de segurança). `npm run typecheck && npm
+run lint && npx vitest run && npm run build` limpos (ver commit `feat(05): consume tool_pending
+mid-call continuation and voiceOverride TwiML`).

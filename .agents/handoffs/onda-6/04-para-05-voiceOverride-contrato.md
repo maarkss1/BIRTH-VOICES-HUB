@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Onda: 6
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -92,3 +92,16 @@ workflow publicado com um nó `voice` configurado para um nome Twilio reconhecid
 atualizados com este contrato, incluindo a lista de nomes de voz reconhecidos hoje
 (`KNOWN_TWILIO_VOICE_NAMES` em `workflowRuntimeService.ts`) — se o produto quiser reconhecer mais
 vozes Twilio, é só estender essa tabela (nunca adivinhar um nome não documentado).
+
+## Resolução
+
+Consumido: `handleTurn` (`telephonyService.ts`) agora retorna `voiceOverride` (opcional, presente
+só quando resolvido pelo runtime), propagado até `telephony.controller.ts` via um novo helper
+`sayOptionsFor` usado em todo `gather.say(...)`/`twiml.say(...)` que fala uma resposta de
+`handleTurn` (turno normal e turno final antes do `hangup`). A limitação documentada acima (saudação
+inicial de `startCall`/`startOutboundCall` não carrega `voiceOverride`) foi mantida como está, sem
+implementação nesta rodada — não é um problema de produto reportado, só uma lacuna conhecida.
+Testes co-localizados em `src/services/telephonyService.toolPendingVoice.test.ts` e
+`src/controllers/telephony.controller.voiceOverride.test.ts`. `npm run typecheck && npm run lint &&
+npx vitest run && npm run build` limpos (ver commit `feat(05): consume tool_pending mid-call
+continuation and voiceOverride TwiML`).
