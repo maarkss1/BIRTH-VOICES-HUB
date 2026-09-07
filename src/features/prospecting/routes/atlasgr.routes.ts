@@ -13,6 +13,7 @@ import {
   IdempotencyCheckFailedError,
   releaseBlandCallbackProcessing,
 } from '../lib/webhookIdempotency.js';
+import { upsertAtlasGRCallResult } from '../../../repositories/atlasGRCallResultRepository.js';
 
 const router = express.Router();
 
@@ -188,6 +189,30 @@ router.post('/webhooks/bland/:token', validateBlandCallbackToken, async (req, re
     call_length: asNumber(data.call_length),
     completed: asBoolean(data.completed, true),
   };
+
+  // Persist the call result for audit/historical lookup before attempting to forward it to
+  // AtlasGR, so a later forwarding failure doesn't also cost us the only record that Bland AI
+  // reported this result at all (see
+  // .agents/handoffs/onda-4/01-para-06-persistir-resultado-bland-pronto.md). Fire-and-forget on
+  // purpose: this local bookkeeping must never fail or delay the response to Bland AI, but a
+  // failure here is never swallowed silently either — it is always logged.
+  // `tenantId` is best-effort only: `ATLASGR_TENANT_ID` identifies the tenant at call *dispatch*
+  // time, but that id is never sent to Bland AI as call metadata and never comes back in this
+  // callback, so it cannot be verified against the actual call — see the `AtlasGRCallResult`
+  // model comment in prisma/schema.prisma for the full rationale.
+  upsertAtlasGRCallResult({
+    callId,
+    status: data.status ?? null,
+    completed: forwardPayload.completed,
+    callLength: forwardPayload.call_length || null,
+    leadId: asString(variables.lead_id) || null,
+    tenantId: process.env.ATLASGR_TENANT_ID?.trim() || null,
+  }).catch((error) => {
+    logger.error('Failed to persist AtlasGR/Bland AI call result', {
+      callId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   try {
     const response = await fetch(`${atlasBaseUrl.replace(/\/$/, '')}/api/webhooks/voice-result`, {

@@ -1,7 +1,11 @@
 import express from 'express';
+import { Redis } from 'ioredis';
 import { verifyToken, TokenPayload } from '../lib/auth-tokens.js';
 import { refreshSession } from '../services/authService.js';
 import { setCookie, ACCESS_TOKEN_MAX_AGE_MS } from '../lib/cookies.js';
+import { authenticateApiKey, isApiKeyFormat } from '../services/apiKeyService.js';
+import { getRedisUrl } from '../lib/env.js';
+import { logger } from '../lib/logger.js';
 
 export const csrfProtection = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
@@ -59,10 +63,50 @@ function setAccessTokenCookie(res: express.Response, token: string) {
   });
 }
 
+// Redis-backed per-API-key rate limiter, applied to every request authenticated via an API key
+// (see the `req.apiKeyId` check in attachAuthIfPresent below). Reuses the same increment+expire
+// sliding-window pattern already used for the IP-based limiters in server.ts (Agente 00's file,
+// not importable here — its limiter factory is a local closure, not exported), rather than
+// inventing a different rate-limiting mechanism for this one call site. A Redis outage fails open
+// (never blocks an otherwise-valid authenticated request) — same tradeoff server.ts's limiters make.
+const API_KEY_RATE_LIMIT = 120;
+const API_KEY_RATE_WINDOW_SECONDS = 60;
+const rateLimitRedis = new Redis(getRedisUrl(), { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
+rateLimitRedis.on('error', (err) => logger.error('API key rate limiter Redis error', err.message));
+
+async function isApiKeyRateLimited(apiKeyId: string): Promise<boolean> {
+  const key = `ratelimit:apikey:${apiKeyId}`;
+  try {
+    const current = await rateLimitRedis.incr(key);
+    if (current === 1) {
+      await rateLimitRedis.expire(key, API_KEY_RATE_WINDOW_SECONDS);
+    }
+    return current > API_KEY_RATE_LIMIT;
+  } catch {
+    return false;
+  }
+}
+
 export async function getAuthUser(req: express.Request, res?: express.Response): Promise<TokenPayload | null> {
+  const bearerToken = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.substring(7)
+    : undefined;
+
+  // Alternative authentication path: a Bearer token shaped like a tenant API key is resolved
+  // against APIKey.keyHash instead of verified as a JWT. This never replaces the JWT flow below —
+  // a request with a JWT cookie or a JWT Bearer token is unaffected and keeps working exactly as
+  // before. A revoked/expired/unknown key authenticates as nobody (401 downstream via
+  // requireTenant), never falls through to try JWT verification on the same string.
+  if (bearerToken && isApiKeyFormat(bearerToken)) {
+    const result = await authenticateApiKey(bearerToken);
+    if (!result) return null;
+    req.apiKeyId = result.apiKeyId;
+    return result.session;
+  }
+
   let token = req.cookies?.access_token;
-  if (!token && req.headers.authorization?.startsWith('Bearer ')) {
-    token = req.headers.authorization.substring(7);
+  if (!token && bearerToken) {
+    token = bearerToken;
   }
 
   if (token) {
@@ -113,5 +157,17 @@ export const attachAuthIfPresent = async (req: express.Request, res: express.Res
       }
     }
   }
+
+  // Basic per-key rate limit, applied only to requests that actually authenticated via an API
+  // key (req.apiKeyId set inside getAuthUser above) — JWT-authenticated requests are unaffected
+  // and continue to rely solely on the IP-based limiters in server.ts.
+  if (req.apiKeyId) {
+    const limited = await isApiKeyRateLimited(req.apiKeyId);
+    if (limited) {
+      res.status(429).json({ error: 'Limite de requisições excedido para esta chave de API. Tente novamente em breve.' });
+      return;
+    }
+  }
+
   next();
 };

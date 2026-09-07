@@ -1,16 +1,21 @@
 apiVersion: 1
 
 datasources:
+  # Explicit `uid` on every datasource so the provisioned dashboards in ./dashboards/*.json can
+  # reference them deterministically instead of relying on Grafana's auto-generated (unstable) uid.
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
   - name: Tempo
+    uid: tempo
     type: tempo
     access: proxy
     url: http://tempo:3200
   - name: Loki
+    uid: loki
     type: loki
     access: proxy
     url: http://loki:3100

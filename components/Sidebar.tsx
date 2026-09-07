@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   Home, Users, BarChart3, Mic, Settings, BookOpen, CreditCard, Code,
-  Building2, Search, Sun, Moon, Laptop, Bell, Star, Clock,
-  ChevronRight, Trash2, Sparkles, BookMarked,
+  Building2, Search, Sun, Moon, Laptop, Star, Clock,
+  ChevronRight, Sparkles, BookMarked,
   Activity, Shield, StarOff
 } from 'lucide-react';
 import { auth } from '../lib/auth';
@@ -11,6 +11,7 @@ import { useSessionStore } from '../store/useSessionStore';
 import { useTheme } from './design-system/ThemeContext';
 import { useToast, AtlasLogo } from './design-system';
 import { getAccessibleTextOnBrand } from './design-system/tokens';
+import { NotificationCenter } from './NotificationCenter';
 
 export function Sidebar() {
   const location = useLocation();
@@ -30,17 +31,6 @@ export function Sidebar() {
   // Navigation state management for favorites and recents
   const [favorites, setFavorites] = useState<string[]>(['/dashboard', '/dashboard/agents/new']);
   const [recents, setRecents] = useState<string[]>([]);
-  const [notifOpen, setNotifOpen] = useState(false);
-  const [notifFilter, setNotifFilter] = useState<'all' | 'system' | 'ia' | 'calls' | 'billing'>('all');
-
-  // Hardcoded notifications with state
-  const [notifications, setNotifications] = useState([
-    { id: 1, title: 'IA Catarina Atualizada', desc: 'Modelo treinado com novos protocolos de atendimento e qualificação de leads.', cat: 'ia', read: false, time: 'Há 5m' },
-    { id: 2, title: 'Conexão SIP Ativa', desc: 'Trunk de telefonia Twilio sincronizado em 04 canais.', cat: 'system', read: false, time: 'Há 22m' },
-    { id: 3, title: 'Lead Quente Identificado', desc: 'Isabela Santos qualificada com alta intenção de compra.', cat: 'calls', read: true, time: 'Há 1h' },
-    { id: 4, title: 'Mensalidade Processada', desc: 'Faturamento de créditos de IA efetuado com sucesso.', cat: 'billing', read: false, time: 'Há 2h' },
-    { id: 5, title: 'Auditoria de Segurança (LGPD)', desc: 'Backup automatizado de logs de voz efetuado.', cat: 'system', read: true, time: 'Ontem' }
-  ]);
 
   // Load favorites & recents on mount
   useEffect(() => {
@@ -100,18 +90,6 @@ export function Sidebar() {
     }).catch(() => {});
   };
 
-  const markAllRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-    showToast('Todas as notificações foram marcadas como lidas.', 'success');
-  };
-
-  const clearNotification = (id: number) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-    showToast('Notificação excluída', 'info');
-  };
-
-  const unreadCount = notifications.filter(n => !n.read).length;
-
   const isActive = (path: string) => location.pathname === path || location.pathname.startsWith(path + '/');
 
   const navItemClass = (path: string) =>
@@ -153,11 +131,6 @@ export function Sidebar() {
     { path: '/dashboard/preferences', label: 'Preferências', icon: <Settings className="h-4 w-4" />, section: 'admin' }
   ];
 
-  const filteredNotifications = notifications.filter(n => {
-    if (notifFilter === 'all') return true;
-    return n.cat === notifFilter;
-  });
-
   return (
     <div className="w-64 bg-slate-900 text-white h-screen flex flex-col p-4 shrink-0 overflow-y-auto border-r border-slate-850 relative select-none">
       
@@ -173,20 +146,7 @@ export function Sidebar() {
           </div>
         </div>
 
-        {/* Notification Bell trigger */}
-        <div className="relative">
-          <button 
-            onClick={() => setNotifOpen(!notifOpen)}
-            className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors relative cursor-pointer"
-          >
-            <Bell className="h-4.5 w-4.5" />
-            {unreadCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center animate-bounce">
-                {unreadCount}
-              </span>
-            )}
-          </button>
-        </div>
+        <NotificationCenter />
       </div>
 
       {/* Enterprise Search Ctrl+K */}
@@ -386,90 +346,6 @@ export function Sidebar() {
           </button>
         </div>
       </div>
-
-      {/* OVERLAY NOTIFICATION DRAWER / PANEL */}
-      {notifOpen && (
-        <div className="absolute top-0 left-0 h-full w-full bg-slate-950/95 z-50 p-4 flex flex-col border-r border-slate-800">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-            <div className="flex items-center gap-1.5">
-              <Bell className="h-4.5 w-4.5 text-brand" />
-              <h3 className="font-bold text-sm">Painel de Alertas</h3>
-              {/* No notification backend exists yet (no model/route emits real alerts) — labeled
-                  so this reads as illustrative content, not live system events. See handoff
-                  02-para-00-notificacoes-backend.md. */}
-              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wide bg-slate-800 text-slate-400 border border-slate-700">
-                Exemplo
-              </span>
-            </div>
-            <button
-              onClick={() => setNotifOpen(false)}
-              className="text-xs text-slate-400 hover:text-white font-bold"
-            >
-              Fechar
-            </button>
-          </div>
-
-          <div className="flex gap-1 mb-3.5 overflow-x-auto pb-1">
-            {(['all', 'system', 'ia', 'calls', 'billing'] as const).map(filter => (
-              <button
-                key={filter}
-                onClick={() => setNotifFilter(filter)}
-                aria-pressed={notifFilter === filter}
-                style={notifFilter === filter ? { backgroundColor: 'var(--brand-color, #ff5618)', borderColor: 'var(--brand-color, #ff5618)', color: accessibleBrandText } : undefined}
-                className={`px-2.5 py-1 text-[9px] font-bold rounded-full border transition-all shrink-0 capitalize ${
-                  notifFilter === filter
-                    ? ''
-                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {filter === 'all' ? 'Ver tudo' : filter}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 text-left">
-            {filteredNotifications.length === 0 ? (
-              <div className="py-12 text-center text-slate-500">
-                <p className="text-xs font-bold">Nenhum alerta ativo</p>
-              </div>
-            ) : (
-              filteredNotifications.map(n => (
-                <div 
-                  key={n.id}
-                  className={`p-2.5 rounded-lg border text-xs relative ${
-                    n.read 
-                      ? 'bg-slate-900/40 border-slate-850 text-slate-450' 
-                      : 'bg-slate-850/60 border-slate-800 text-slate-200'
-                  }`}
-                >
-                  <div className="flex justify-between items-start gap-4">
-                    <p className="font-bold pr-2">{n.title}</p>
-                    <span className="text-[9px] text-slate-500 font-bold shrink-0">{n.time}</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">{n.desc}</p>
-                  
-                  <div className="flex justify-between items-center mt-2.5 pt-2 border-t border-slate-800/40">
-                    <span className="text-[8px] font-bold text-brand uppercase bg-brand-50/10 px-1 py-0.5 rounded">{n.cat}</span>
-                    <button 
-                      onClick={() => clearNotification(n.id)}
-                      className="text-slate-500 hover:text-red-400"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="pt-3 border-t border-slate-800 flex justify-between items-center text-[10px]">
-            <button onClick={markAllRead} className="text-brand hover:underline font-bold">
-              Lidas todas
-            </button>
-            <span className="text-slate-500 font-mono">Total: {notifications.length}</span>
-          </div>
-        </div>
-      )}
 
     </div>
   );

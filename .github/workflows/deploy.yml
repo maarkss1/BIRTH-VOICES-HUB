@@ -136,6 +136,18 @@ jobs:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
           image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.TARGET_SHA }}
+          # Cloud Run ignores the Dockerfile's HEALTHCHECK instruction entirely — it has its own
+          # probe mechanism that decides whether a new revision is healthy enough to receive
+          # traffic (startup) and whether a running instance should be restarted (liveness).
+          # Without this, Cloud Run falls back to a bare TCP connect on $PORT, which passes the
+          # instant Express starts listening — before the app has confirmed it can reach Postgres
+          # or Redis. Startup uses /ready (src/controllers/health.controller.ts — real SELECT 1 +
+          # Redis PING) so a revision only starts taking traffic once its dependencies are
+          # reachable; liveness uses the cheaper /health so a transient DB/Redis blip doesn't
+          # trigger a restart loop of an otherwise-fine process.
+          flags: >-
+            --startup-probe=httpGet.path=/ready,httpGet.port=3000,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=10
+            --liveness-probe=httpGet.path=/health,httpGet.port=3000,initialDelaySeconds=10,timeoutSeconds=3,periodSeconds=30,failureThreshold=3
           env_vars: |
             NODE_ENV=production
             DATABASE_URL=${{ secrets.PRODUCTION_DATABASE_URL }}

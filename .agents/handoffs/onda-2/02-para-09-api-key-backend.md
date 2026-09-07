@@ -1,7 +1,8 @@
 - De: Agente 02 (Produto, Navegação e UX)
 - Para: Agente 09 (SDK, Contratos e Documentação de API)
 - Onda: 2
-- Status: aberto
+- Status: resolvido (parcial — ver "## Resolução": API Keys resolvido; Webhooks configuráveis por
+  tenant permanece em aberto, novo handoff aberto para o Coordenador)
 - Prioridade: normal
 
 ## Problema
@@ -48,3 +49,50 @@ chave revogada deve parar de autenticar imediatamente.
 Nenhuma chave real foi exposta — as duas chaves de exemplo removidas eram valores fixos gerados
 para preencher a UI, nunca associados a nenhum sistema de autenticação real (confirmado: nenhum
 middleware de auth lê `APIKey`).
+
+## Resolução
+Resolvido por: Agente 01 (Plataforma, Segurança, Tenancy e Dados), Onda roteada pelo Coordenador
+via `.agents/handoffs/onda-4/09-para-00-api-key-backend-fora-de-escopo.md` (o handoff correto para
+implementação de rotas/controller/service/schema é meu domínio, não do Agente 09).
+
+**Parte de API Keys — resolvida:**
+- `prisma/schema.prisma`: model `APIKey` corrigido (era schema morto, sem `tenantId`). Agora tem
+  `tenantId` (FK `Tenant`, `onDelete: Cascade`, `@@index`), `createdByUserId` (FK `User`,
+  `onDelete: SetNull`), `lastUsedAt`, `revokedAt`. Migração real aplicada:
+  `prisma/migrations/20260907025549_fix_apikey_tenant_scope/`.
+- Backend real implementado: `src/repositories/apiKeyRepository.ts`,
+  `src/services/apiKeyService.ts`, `src/controllers/apiKey.controller.ts`,
+  `src/routes/apiKey.routes.ts` — `POST/GET /api/developers/keys`,
+  `DELETE /api/developers/keys/:id` e `POST /api/developers/keys/:id/revoke`. Admin-only
+  (`requireRole(['admin'])`), tenant-scoped, com `writeAuditLog` em criação e revogação
+  (`API_KEY_CREATE`/`API_KEY_REVOKE`).
+- Chave em texto claro retornada **uma única vez** na resposta de criação; apenas `keyHash`
+  (SHA-256) é persistido. Listagem nunca inclui hash nem chave em claro (`API_KEY_SAFE_SELECT`
+  no repository nem sequer seleciona a coluna).
+- `src/middlewares/index.ts` (`getAuthUser`) ganhou um caminho de autenticação alternativo:
+  `Authorization: Bearer <api-key>` (prefixo `bvhk_live_`) resolve para o mesmo formato de
+  `req.user`/`req.tenantId` que o JWT já produz (age em nome do usuário/role que criou a chave),
+  então rotas existentes funcionam sem alteração. Chave revogada/expirada é checada ao vivo no
+  banco a cada request — falha imediatamente, sem cache.
+- Rate limiting básico por chave (120 req/60s, Redis, mesmo padrão increment+expire do limitador
+  de IP em `server.ts`), aplicado apenas a requests autenticadas via API key.
+- Testado de ponta a ponta manualmente contra o servidor real (registro → criação → listagem →
+  autenticação via Bearer → `lastUsedAt` atualizado → revogação → 401 imediato → isolamento de
+  tenant → 403 para role não-admin) e com testes automatizados
+  (`src/repositories/apiKeyRepository.test.ts`, `src/services/apiKeyService.test.ts`,
+  `src/middlewares/apiKeyAuth.test.ts`). `npm run typecheck`, `lint`, `test`, `build` e
+  `npx prisma generate` verdes.
+- Teste esperado deste handoff ("uma chave criada deve funcionar como Bearer token; uma chave
+  revogada deve parar de autenticar imediatamente") confirmado manualmente (ver relatório da Onda).
+
+**Parte de Webhooks configuráveis por tenant — permanece em aberto**, fora do escopo do pedido que
+me foi roteado (só API Keys). Não implementada aqui para não inventar, sem decisão de produto,
+esquema de assinatura/retry/endpoint de um novo domínio (webhooks) que tem página própria em
+`hooks/useDeveloperSettings.ts`/`Developers.tsx`. Novo handoff aberto:
+`.agents/handoffs/onda-4/01-para-00-webhooks-tenant-fora-de-escopo.md`.
+
+Handoffs novos criados para consumo do trabalho acima:
+`.agents/handoffs/onda-4/01-para-02-api-key-endpoints-prontos.md` (Agente 02, consumir os
+endpoints reais em `Developers.tsx`/`useDeveloperSettings.ts`) e
+`.agents/handoffs/onda-4/01-para-09-api-key-openapi-sdk.md` (Agente 09, atualizar
+`docs/api/openapi.yaml` e `packages/sdk/`).

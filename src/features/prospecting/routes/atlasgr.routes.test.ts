@@ -15,18 +15,24 @@ vi.mock('../lib/webhookIdempotency.js', () => ({
   releaseBlandCallbackProcessing: vi.fn(),
 }));
 
+vi.mock('../../../repositories/atlasGRCallResultRepository.js', () => ({
+  upsertAtlasGRCallResult: vi.fn(),
+}));
+
 import { voiceProspectingService } from '../services/voice.service.js';
 import {
   beginBlandCallbackProcessing,
   completeBlandCallbackProcessing,
   releaseBlandCallbackProcessing,
 } from '../lib/webhookIdempotency.js';
+import { upsertAtlasGRCallResult } from '../../../repositories/atlasGRCallResultRepository.js';
 import atlasgrRoutes from './atlasgr.routes.js';
 
 const mockTrigger = vi.mocked(voiceProspectingService.triggerOutboundCall);
 const mockBeginCallback = vi.mocked(beginBlandCallbackProcessing);
 const mockCompleteCallback = vi.mocked(completeBlandCallbackProcessing);
 const mockReleaseCallback = vi.mocked(releaseBlandCallbackProcessing);
+const mockUpsertCallResult = vi.mocked(upsertAtlasGRCallResult);
 
 const ORIGINAL_ENV = { ...process.env };
 const SECRET = 'shared-secret-for-tests';
@@ -47,6 +53,7 @@ beforeEach(() => {
   mockBeginCallback.mockResolvedValue('acquired');
   mockCompleteCallback.mockResolvedValue(undefined);
   mockReleaseCallback.mockResolvedValue(undefined);
+  mockUpsertCallResult.mockResolvedValue(undefined as never);
 });
 
 afterEach(() => {
@@ -188,6 +195,64 @@ describe('POST /api/webhooks/bland/:token', () => {
     );
     expect(mockCompleteCallback).toHaveBeenCalledWith('c1');
     expect(mockReleaseCallback).not.toHaveBeenCalled();
+    expect(mockUpsertCallResult).toHaveBeenCalledWith({
+      callId: 'c1',
+      status: 'completed',
+      completed: true,
+      callLength: null,
+      leadId: null,
+      tenantId: null,
+    });
+  });
+
+  it('persists the call result with the configured tenant id as best effort', async () => {
+    process.env.ATLASGR_TENANT_ID = 'tenant-123';
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    const app = buildApp();
+
+    const res = await request(app).post('/api/webhooks/bland/callback-token').send({
+      call_id: 'c1',
+      status: 'completed',
+      call_length: 42,
+      variables: { lead_id: 'lead-1' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockUpsertCallResult).toHaveBeenCalledWith({
+      callId: 'c1',
+      status: 'completed',
+      completed: true,
+      callLength: 42,
+      leadId: 'lead-1',
+      tenantId: 'tenant-123',
+    });
+  });
+
+  it('does not fail the callback response when persisting the call result fails', async () => {
+    mockUpsertCallResult.mockRejectedValue(new Error('db unavailable'));
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    const app = buildApp();
+
+    const res = await request(app).post('/api/webhooks/bland/callback-token').send({
+      call_id: 'c1',
+      status: 'completed',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ received: true, duplicate: false });
+    // Let the fire-and-forget persistence rejection settle before the test ends.
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it('does not persist a call result for a duplicate/already-processed callback', async () => {
+    mockBeginCallback.mockResolvedValue('duplicate');
+    const app = buildApp();
+
+    await request(app).post('/api/webhooks/bland/callback-token').send({ call_id: 'c1', status: 'completed' });
+
+    expect(mockUpsertCallResult).not.toHaveBeenCalled();
   });
 
   it('returns a successful no-op for an already completed callback', async () => {

@@ -41,13 +41,25 @@ export const createUserSchema = z.object({
   email: z.string().email('Formato de email inválido'),
   password: z.string().min(6, 'A senha precisa de no mínimo 6 caracteres'),
   companyName: z.string().optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['admin', 'user', 'supervisor']).optional(),
 });
 
 export const updateUserSchema = z.object({
   companyName: z.string().optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['admin', 'user', 'supervisor']).optional(),
   password: z.string().min(6).optional(),
+});
+
+// billing.controller.ts (Agente 12) — POST /api/billing/change-plan.
+export const changePlanSchema = z.object({
+  planId: z.string().min(1, 'planId é obrigatório'),
+  effectiveAt: z.enum(['immediate', 'next_cycle']).optional(),
+});
+
+// apiKey.controller.ts (Agente 01) — POST /api/developers/keys.
+export const createApiKeySchema = z.object({
+  name: z.string().min(1, 'Nome da chave é obrigatório').max(200, 'Nome da chave muito longo'),
+  expiresAt: z.string().datetime({ message: 'expiresAt deve ser uma data ISO 8601 válida' }).optional(),
 });
 
 export const agentSchema = z.object({
