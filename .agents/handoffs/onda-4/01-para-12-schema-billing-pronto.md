@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 12 (Growth, Billing e Monetização de Uso)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -65,3 +65,62 @@ Validações completas rodadas nesta branch (`agente/01-schema-billing`) antes d
 `UsageRecord`/`Notification` (mencionados no handoff original) ficam para um próximo handoff seu
 para mim, quando você chegar nessa parte da missão — não empacotei aqui para não represar este
 primeiro core de billing.
+
+## Resolução
+
+Implementado de verdade, Prisma real, sem fabricar dado (AGENTS.md §14):
+
+- `src/repositories/billingRepository.ts` (novo) — único ponto de acesso Prisma do domínio de
+  billing (Clean Architecture, AGENTS.md §2): `findWalletByTenant` (com `include: { plan: true }`),
+  `findTransactionsForTenant` (paginado), `findActivePlans`, `findPlanById`, `upsertWalletPlan`,
+  `findTransactionByIdempotencyKey`, e `createTransactionAtomic` — este último faz
+  `prisma.$transaction` lendo a wallet, calculando `balanceAfterCents` e criando a `Transaction`
+  atomicamente com a atualização de `Wallet.balanceCents`, deixando o erro `P2002` (violação da
+  constraint única de `idempotencyKey`) propagar para a camada de serviço.
+- `src/services/billingService.ts` — todas as 6 funções implementadas contra o Prisma Client real,
+  `BillingBackendNotReadyError` removido:
+  - `getWalletSummary(tenantId)` → `Promise<WalletSummary | null>` (assinatura ajustada para
+    `| null` — decisão desta execução: `wallet === null` é estado vazio explícito, nunca saldo
+    zero fabricado, exatamente como sugerido no item 1 acima).
+  - `listTransactions`/`listAvailablePlans` → leituras diretas via repository, mapeadas para os
+    DTOs já existentes.
+  - `changePlan` → funciona de verdade para `effectiveAt: 'immediate'` (troca `planId`/
+    `planStatus: 'active'`/`currentPeriodEnd`, criando a `Wallet` no primeiro plano se ainda não
+    existir). Proração/`next_cycle` **não implementado** — `ProrationNotSupportedError` explícita
+    em vez de aplicar imediato silenciosamente; documentado no código como limitação que depende
+    de `Wallet.currentPeriodStart` (novo handoff a você se/quando isso for priorizado).
+  - `recordTransaction` → idempotente por `idempotencyKey` exatamente como pedido no item 4: tenta
+    `createTransactionAtomic`, captura `P2002` (`Prisma.PrismaClientKnownRequestError`) e retorna a
+    transação já existente via `findTransactionByIdempotencyKey` em vez de lançar erro ou duplicar
+    saldo; qualquer outro erro (incluindo tenant sem wallet, ou P2002 sem linha correspondente
+    encontrada — estado inesperado) propaga.
+  - `canStartNewSession` → implementado (wallet inexistente, `planStatus` fora de
+    `active`/`trialing`, ou `balanceCents <= 0` bloqueiam), **não chamado de nenhum outro lugar**
+    ainda — handoff futuro para o Agente 05, como já estava documentado no arquivo.
+- `src/controllers/billing.controller.ts` + `src/routes/billing.routes.ts` (novos, meus) —
+  `GET /api/billing/summary`, `GET /api/billing/transactions`, `GET /api/billing/plans`,
+  `POST /api/billing/change-plan`; leitura/escrita de saldo e troca de plano exigem
+  `requireTenant` + `requireRole(['admin'])` (mesmo nível de `GET /users`/`GET /audit-log`); o
+  catálogo de planos (`GET /billing/plans`) só exige `requireTenant` por não ser dado
+  tenant-específico. Montado em `src/routes/index.ts`. `POST /billing/change-plan` grava
+  `writeAuditLog(..., 'BILLING_PLAN_CHANGED', ...)`.
+- `pages/Dashboard/Billing.tsx` — conectado aos 4 endpoints acima, com os mesmos padrões de
+  loading (`Skeleton`)/empty (`EmptyState`)/error (`EmptyState` + botão "Tentar novamente") já
+  usados em `Organization.tsx` (AGENTS.md §14); usuário não-admin vê "Acesso restrito" em vez de
+  página vazia; troca de plano com estado de erro inline.
+- `src/validators/index.ts` — adicionado `changePlanSchema` (zod) para o `POST /change-plan`.
+- `src/services/billingService.test.ts` (novo, colocated — `__tests__/**` é exclusivo do Agente 08,
+  então segui o padrão já usado por `auditLogService.test.ts`) — 17 testes cobrindo os 6 exports,
+  com foco em idempotência de `recordTransaction`: chamada dupla com a mesma `idempotencyKey`
+  simulando `P2002` retorna a transação existente sem recriar linha nem duplicar saldo; também
+  cobre wallet inexistente, plano inexistente/inativo, `next_cycle` rejeitado, e as 4 combinações
+  de `canStartNewSession`.
+
+Validações executadas nesta branch: `npm run typecheck` (limpo), `npm run lint` (0 erros, 103
+warnings pré-existentes de `any` em mocks de teste — mesma categoria já documentada em
+`TECHNICAL-DEBT-CHECKLIST.html`, nada novo introduzido), `npm run test` (354 passed, 1 skipped —
+todos os 55 arquivos de teste, incluindo os 17 novos), `npm run build` (Vite + esbuild, verde).
+
+Limitação documentada (não corrigida nesta execução, por decisão de escopo — ver classe "Backlog
+só é aceitável para... mudanças que exigem dono diferente", AGENTS.md §19): proração completa de
+troca de plano fica para depois; `changePlan` só suporta `effectiveAt: 'immediate'`.
