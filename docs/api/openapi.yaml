@@ -2479,14 +2479,11 @@ paths:
         the caller loses it, the only remedy is `POST /developers/webhooks/{id}/regenerate-secret`,
         which invalidates the old secret and mints a new one — there is no "reveal again" path.
 
-        **Not yet backed by persistence in this deployment**: `prisma/schema.prisma` now defines
-        the `TenantWebhookEndpoint` model this route needs (landed in
-        `.agents/handoffs/onda-5/01-para-05-schema-webhook-endpoint-pronto.md`), but
-        `src/repositories/webhookEndpointRepository.ts` has not yet been switched over to query it
-        — every function there still unconditionally throws `WebhookEndpointSchemaNotReadyError`.
-        Until that wiring lands (open, `Status: aberto`, in the handoff above), every call below
-        returns `503` — see that response for each operation. The request/response contract
-        documented here is final and will not change shape once persistence is wired up.
+        Backed by the real `TenantWebhookEndpoint` Prisma model (see
+        `.agents/handoffs/onda-5/01-para-05-schema-webhook-endpoint-pronto.md`) — persistence is
+        live, this is not a scaffold. `503` (see that response below) is returned only if the
+        underlying persistence layer is genuinely unavailable at request time (e.g. a database
+        outage), never as this route's normal behavior.
       requestBody:
         required: true
         content:
@@ -2555,9 +2552,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: >
-            Tenant-scoped webhook endpoints are not available in this deployment yet
-            (`TenantWebhookEndpoint` scaffold — see description above). Never returned as a
-            fabricated empty success.
+            The persistence layer backing tenant-scoped webhook endpoints is temporarily
+            unavailable (e.g. a database outage). Never returned as a fabricated empty success.
           content:
             application/json:
               schema:
@@ -2586,7 +2582,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '503':
-          description: Tenant-scoped webhook endpoints are not available in this deployment yet — see `POST /developers/webhooks`.
+          description: The persistence layer backing tenant-scoped webhook endpoints is temporarily unavailable (e.g. a database outage). Never returned as a fabricated empty success.
           content:
             application/json:
               schema:
@@ -2620,7 +2616,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '503':
-          description: Tenant-scoped webhook endpoints are not available in this deployment yet — see `POST /developers/webhooks`.
+          description: The persistence layer backing tenant-scoped webhook endpoints is temporarily unavailable (e.g. a database outage). Never returned as a fabricated empty success.
           content:
             application/json:
               schema:
@@ -2678,7 +2674,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '503':
-          description: Tenant-scoped webhook endpoints are not available in this deployment yet — see `POST /developers/webhooks`.
+          description: The persistence layer backing tenant-scoped webhook endpoints is temporarily unavailable (e.g. a database outage). Never returned as a fabricated empty success.
           content:
             application/json:
               schema:

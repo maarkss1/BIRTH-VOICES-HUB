@@ -63,12 +63,15 @@ export class WebhookService {
         return;
       }
 
-      // Defensive: resolution is a real Prisma read against `TenantWebhookEndpoint` (see
-      // .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint-pronto.md) and should not throw
-      // in normal operation, but `dispatch()` itself is documented to never throw either — a
-      // transient DB failure here is treated the same as "tenant has no active endpoint
-      // configured", falling through to the legacy env-var behavior below rather than dropping the
-      // event entirely.
+      // Resolution is a real Prisma read against `TenantWebhookEndpoint` (see
+      // .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint-pronto.md). A failure here
+      // (e.g. a transient DB outage) must NOT fall through to the deployment-wide env-var
+      // fallback below — a tenant that has configured its own endpoints could otherwise have call
+      // /lead data delivered to that shared destination during the very outage that made the
+      // lookup fail, an unintended cross-destination leak (AGENTS.md §15: fail closed on an
+      // ambiguous/error state, never silently downgrade to a different destination). `dispatch()`
+      // itself still never throws — the event is just dropped (logged as an error, not a debug
+      // line) rather than misdelivered; the caller's business operation is unaffected either way.
       let hasAnyActiveEndpoint = false;
       let targets: { endpointId: string; url: string }[] = [];
       try {
@@ -76,11 +79,11 @@ export class WebhookService {
         hasAnyActiveEndpoint = resolution.hasAnyActiveEndpoint;
         targets = resolution.targets;
       } catch (resolutionError) {
-        logger.debug(
-          `[WebhookService] Could not resolve tenant webhook endpoints for tenant ${tenantId} (falling back to deployment-wide config): ${
-            resolutionError instanceof Error ? resolutionError.message : String(resolutionError)
-          }`,
+        logger.error(
+          `[WebhookService] Could not resolve tenant webhook endpoints for tenant ${tenantId} — dropping event ${event} instead of risking delivery to the wrong destination`,
+          resolutionError,
         );
+        return;
       }
 
       if (hasAnyActiveEndpoint) {

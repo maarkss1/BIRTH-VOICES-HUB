@@ -8,8 +8,17 @@ vi.mock('../repositories/agentRepository.js', () => ({
   getAgent: vi.fn(),
 }));
 
+// `tool` node execution is gated on the same tenant consent required for external AI providers
+// (see workflowRuntimeService.ts#executeToolNodeAsync) — mocked here (not the real
+// settingService/tenantAiConsentRepository/Prisma chain) so these tests control consent state
+// directly instead of depending on the global Prisma mock's default empty result.
+vi.mock('./settingService.js', () => ({
+  getAiConsent: vi.fn(),
+}));
+
 import { findActiveWorkflowForTenant } from '../repositories/workflowRepository.js';
 import { getAgent } from '../repositories/agentRepository.js';
+import { getAiConsent } from './settingService.js';
 import {
   initializeWorkflowRuntime,
   prepareWorkflowTurn,
@@ -20,6 +29,8 @@ import type { KnowledgeDocument } from '../../lib/voice-runtime/intelligence/Kno
 
 const mockFindActive = vi.mocked(findActiveWorkflowForTenant);
 const mockGetAgent = vi.mocked(getAgent);
+const mockGetAiConsent = vi.mocked(getAiConsent);
+const GRANTED_CONSENT = { granted: true, grantedAt: null, revokedAt: null, grantedByUserId: null };
 
 type ActiveWorkflow = Awaited<ReturnType<typeof findActiveWorkflowForTenant>>;
 type Agent = Awaited<ReturnType<typeof getAgent>>;
@@ -82,6 +93,9 @@ const originalFetch = global.fetch;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default to granted so tests that aren't specifically about the consent gate exercise the
+  // tool-execution mechanics unaffected; the dedicated consent tests below override this.
+  mockGetAiConsent.mockResolvedValue(GRANTED_CONSENT);
 });
 
 afterEach(() => {
@@ -308,6 +322,46 @@ describe('tool node execution', () => {
     // The call kept going and routed on the failure branch instead of crashing.
     expect(state?.currentNodeId).toBe('end-fail');
     expect(state?.ended).toBe(true);
+  });
+
+  it('never calls the external endpoint when the tenant has not granted consent', async () => {
+    mockGetAiConsent.mockResolvedValue({ granted: false, grantedAt: null, revokedAt: null, grantedByUserId: null });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/balance' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'tool-1'), edge('e2', 'tool-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state?.variables.tool_ok).toBe('false');
+    expect(state?.variables.tool_error).toBe('consent_not_granted');
+  });
+
+  it('fails closed (never executes the call) when the consent check itself errors', async () => {
+    mockGetAiConsent.mockRejectedValue(new Error('database unavailable'));
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/balance' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'tool-1'), edge('e2', 'tool-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state?.variables.tool_ok).toBe('false');
+    expect(state?.variables.tool_error).toBe('consent_check_unavailable');
   });
 
   it('mid-call (prepareWorkflowTurn, synchronous) a tool node degrades to the fallback path instead of blocking or crashing', () => {

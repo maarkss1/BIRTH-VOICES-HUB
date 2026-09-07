@@ -94,6 +94,7 @@ export function createWorkflowVersion(input: {
   version: number;
   nodes: unknown;
   edges: unknown;
+  metadata: unknown;
   publishedBy: string;
 }) {
   return prisma.workflowVersion.create({
@@ -102,6 +103,7 @@ export function createWorkflowVersion(input: {
       version: input.version,
       nodes: input.nodes as Prisma.InputJsonValue,
       edges: input.edges as Prisma.InputJsonValue,
+      metadata: input.metadata as Prisma.InputJsonValue,
       publishedBy: input.publishedBy,
     },
   });

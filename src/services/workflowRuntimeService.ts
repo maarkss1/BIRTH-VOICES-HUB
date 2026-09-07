@@ -9,6 +9,7 @@ import {
 } from '../../lib/voice-runtime/intelligence/KnowledgeConfidenceEngine.js';
 import { executeHttpTool } from '../../lib/voice-runtime/HttpToolExecutor.js';
 import type { AgentConfiguration } from '../types/agent.js';
+import { getAiConsent } from './settingService.js';
 
 export type RuntimeProvider = 'GoogleGemini' | 'OpenAI' | 'Claude';
 export type RuntimeNodeType =
@@ -472,10 +473,26 @@ function applyKnowledgeNode(state: WorkflowRuntimeState, node: RuntimeNode): voi
   state.variables[`knowledge_${node.id}_is_low_confidence`] = String(isLowConfidence);
 }
 
+// The Studio's `tool` node registry persists `headers` as a JSON-encoded string in
+// `data.config.headers` (see `store/useStudioStore.ts`'s `tool` node `defaultConfig`, e.g.
+// `'{"Authorization": "Bearer token_secret"}'`) — every workflow published through the Inspector
+// carries it that way, never as a live object. Parsing it here (instead of requiring an object) is
+// what actually makes a configured header like `Authorization` reach the request; accepting an
+// object too keeps this tolerant of a future Studio change without another silent breakage.
 function toToolHeaders(value: unknown, variables: Record<string, string>): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return {};
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return {};
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
   const headers: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+  for (const [key, raw] of Object.entries(parsed as Record<string, unknown>)) {
     if (typeof raw === 'string') headers[key] = renderTemplate(raw, variables);
   }
   return headers;
@@ -509,8 +526,42 @@ function applyToolFallback(state: WorkflowRuntimeState, node: RuntimeNode, reaso
  * (i.e. before the call's first `prompt`/`question`). SSRF/timeout/retry defense lives in
  * `executeHttpTool` (`lib/voice-runtime/HttpToolExecutor.ts`), reusing
  * `isPrivateOrReservedHost` from `src/validators/index.ts` — never re-implemented here.
+ *
+ * Gated on the same tenant-level external-data-egress consent already required for AI providers
+ * (`getAiConsent`, AGENTS.md §16) before the call fires: a `tool` node sends caller/lead fields
+ * (`{{from}}`, `{{to}}`, workflow variables) to a tenant-configured URL, an external destination
+ * for personal data exactly like the AI Gateway's, and today the only consent primitive this
+ * platform has is that one — reusing it here is a real check now rather than none while a
+ * dedicated "tool endpoint" consent flag is decided as a separate product change. Checked fresh on
+ * every call (never cached in the immutable per-call state), fail-closed on the lookup itself
+ * erroring (mirrors `requireAiProviderConsent`'s middleware, which returns 503 rather than
+ * treating a DB error as "no consent") — never fabricate consent, never let an outage silently
+ * downgrade to "allowed".
  */
 async function executeToolNodeAsync(state: WorkflowRuntimeState, node: RuntimeNode): Promise<void> {
+  const tenantId = getRuntimeTenantId(state);
+  try {
+    const consent = await getAiConsent(tenantId);
+    if (!consent.granted) {
+      logger.warn('Workflow tool node blocked: tenant has not granted external data consent', {
+        workflowId: state.workflowId,
+        tenantId,
+        nodeId: node.id,
+      });
+      applyToolFallback(state, node, 'consent_not_granted');
+      return;
+    }
+  } catch (error) {
+    logger.error('Failed to verify tenant consent before executing workflow tool node', {
+      workflowId: state.workflowId,
+      tenantId,
+      nodeId: node.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    applyToolFallback(state, node, 'consent_check_unavailable');
+    return;
+  }
+
   const endpoint = renderTemplate(asString(node.config.endpoint), state.variables);
   const bodyPayload = typeof node.config.bodyPayload === 'string'
     ? renderTemplate(node.config.bodyPayload, state.variables)

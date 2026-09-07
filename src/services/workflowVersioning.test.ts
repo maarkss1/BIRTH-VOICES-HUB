@@ -197,6 +197,7 @@ describe('publishWorkflow archives the pre-publish version', () => {
       version: 1,
       nodes,
       edges,
+      metadata: {},
       publishedBy: 'user-1',
     });
     expect(mockUpsert).toHaveBeenNthCalledWith(1, 'tenant-1', 'user-1', 'wf-1', expect.objectContaining({
@@ -215,6 +216,7 @@ describe('publishWorkflow archives the pre-publish version', () => {
       version: 2,
       nodes,
       edges,
+      metadata: {},
       publishedBy: 'user-1',
     });
     expect(mockUpsert).toHaveBeenNthCalledWith(2, 'tenant-1', 'user-1', 'wf-1', expect.objectContaining({
@@ -355,11 +357,13 @@ describe('rollbackToVersion', () => {
       version: 3,
       nodes: current.nodes,
       edges: current.edges,
+      metadata: {},
       publishedBy: 'user-2',
     });
     expect(mockUpsert).toHaveBeenCalledWith('tenant-1', 'user-2', 'wf-1', expect.objectContaining({
       nodes: target.nodes,
       edges: target.edges,
+      metadata: {},
       status: 'active',
       version: 4,
     }));

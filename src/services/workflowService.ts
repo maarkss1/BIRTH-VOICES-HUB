@@ -116,6 +116,7 @@ async function archivePublishedVersion(
   versionToArchive: number,
   nodes: unknown,
   edges: unknown,
+  metadata: unknown,
   publishedBy: string
 ): Promise<void> {
   try {
@@ -124,6 +125,7 @@ async function archivePublishedVersion(
       version: versionToArchive,
       nodes,
       edges,
+      metadata,
       publishedBy,
     });
   } catch (err) {
@@ -220,7 +222,7 @@ export async function publishWorkflow(tenantId: string, userId: string) {
     throw new ValidationFailedError(issues);
   }
 
-  await archivePublishedVersion(existing.id, existing.version, existing.nodes, existing.edges, userId);
+  await archivePublishedVersion(existing.id, existing.version, existing.nodes, existing.edges, existing.metadata, userId);
 
   return workflowRepository.upsertWorkflow(tenantId, userId, existing.id, {
     status: 'active',
@@ -270,11 +272,12 @@ export async function rollbackToVersion(tenantId: string, userId: string, workfl
     throw new ValidationFailedError(issues);
   }
 
-  await archivePublishedVersion(existing.id, existing.version, existing.nodes, existing.edges, userId);
+  await archivePublishedVersion(existing.id, existing.version, existing.nodes, existing.edges, existing.metadata, userId);
 
   return workflowRepository.upsertWorkflow(tenantId, userId, existing.id, {
     nodes: target.nodes,
     edges: target.edges,
+    metadata: target.metadata,
     status: 'active',
     version: existing.version + 1,
   });

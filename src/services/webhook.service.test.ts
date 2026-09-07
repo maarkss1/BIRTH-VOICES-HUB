@@ -110,15 +110,17 @@ describe('WebhookService.dispatch — per-tenant endpoint resolution', () => {
     expect(mockAdd).not.toHaveBeenCalled();
   });
 
-  it('treats a schema-not-ready resolution failure exactly like "no tenant endpoint configured" and never throws', async () => {
-    mockResolveActiveEndpointsForEvent.mockRejectedValue(new Error('TenantWebhookEndpoint ainda não existe'));
+  it('fails closed on a resolution error — drops the event rather than risking delivery to the deployment-wide fallback', async () => {
+    mockResolveActiveEndpointsForEvent.mockRejectedValue(new Error('database unavailable'));
     process.env.WEBHOOK_URL = 'https://deployment-wide.example.com/hook';
 
     const service = new WebhookService();
     await expect(service.dispatch('tenant-a', 'call.completed', {})).resolves.toBeUndefined();
 
-    expect(mockAdd).toHaveBeenCalledTimes(1);
-    expect(mockAdd.mock.calls[0][1].url).toBe('https://deployment-wide.example.com/hook');
+    // A tenant with its own configured endpoints must never have this event misdelivered to the
+    // deployment-wide destination just because the lookup that would have found those endpoints
+    // failed — the event is dropped instead (see webhook.service.ts#dispatch's catch).
+    expect(mockAdd).not.toHaveBeenCalled();
   });
 
   it('never enqueues a target belonging to a different tenant than the one dispatching', async () => {
