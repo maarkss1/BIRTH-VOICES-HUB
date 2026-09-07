@@ -39,6 +39,12 @@ vi.mock('./design-system', async (importOriginal) => {
   };
 });
 
+// NotificationCenter (Agente 12) owns its own fetch/open-close/state — isolate the Sidebar tree
+// from it here and cover its real behavior in components/NotificationCenter/NotificationCenter.test.tsx.
+vi.mock('./NotificationCenter', () => ({
+  NotificationCenter: () => <div data-testid="notification-center-stub" />
+}));
+
 function renderSidebar() {
   return render(
     <MemoryRouter initialEntries={['/dashboard']}>
@@ -86,19 +92,14 @@ describe('Sidebar', () => {
     window.removeEventListener('open-command-palette', handler);
   });
 
-  it('opens the notification drawer and lists notifications when the bell is clicked', async () => {
-    const user = userEvent.setup();
+  it('renders the real NotificationCenter in the header instead of a hardcoded panel', () => {
     renderSidebar();
 
-    // Notification panel is not rendered until opened.
+    // The notification bell + panel now live entirely inside NotificationCenter (Agente 12),
+    // which owns its own /api/notifications fetch and state — Sidebar just mounts it.
+    expect(screen.getByTestId('notification-center-stub')).toBeInTheDocument();
     expect(screen.queryByText('Painel de Alertas')).not.toBeInTheDocument();
-
-    // The bell button is the first button in the header (before the search trigger).
-    const buttons = screen.getAllByRole('button');
-    await user.click(buttons[0]);
-
-    expect(screen.getByText('Painel de Alertas')).toBeInTheDocument();
-    expect(screen.getByText('IA Catarina Atualizada')).toBeInTheDocument();
+    expect(screen.queryByText('Exemplo')).not.toBeInTheDocument();
   });
 
   it('removing a favorite shows a toast and updates the favorites section', async () => {
