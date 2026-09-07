@@ -27,6 +27,7 @@ import { otelCollector } from "./lib/voice-runtime/otel.js";
 import { logger } from "./src/lib/logger.js";
 import { startWebhookWorker } from "./src/services/webhook.worker.js";
 import { startRetentionScheduler } from "./src/services/retentionScheduler.js";
+import { startSlaScheduler } from "./src/services/slaScheduler.js";
 import fs from "fs";
 import swaggerUi from "swagger-ui-express";
 import yaml from "yaml";
@@ -320,6 +321,7 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'test') {
     startWebhookWorker();
     startRetentionScheduler();
+    startSlaScheduler();
     server.listen(PORT, "0.0.0.0", () => {
       logger.info(`Server running on http://localhost:${PORT}`);
     });

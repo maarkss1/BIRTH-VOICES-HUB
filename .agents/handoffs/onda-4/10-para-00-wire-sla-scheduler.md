@@ -1,7 +1,7 @@
 - De: Agente 10 (Infraestrutura, Observabilidade e Deploy)
 - Para: Agente 00 (Coordenador) — `server.ts` exige aprovação explícita do Coordenador (AGENTS.md §11)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -86,3 +86,9 @@ Redis/registrar job durante a suíte de testes).
 
 Mesma dinâmica já resolvida para `.agents/handoffs/onda-4/10-para-00-wire-retention-scheduler.md`
 (retenção de `CallLog`) — o Coordenador já aplicou aquele wiring seguindo exatamente este formato.
+
+## Resolução
+
+Wiring aplicado exatamente como sugerido: import de `startSlaScheduler` ao lado de
+`startRetentionScheduler` em `server.ts`, chamada dentro do mesmo bloco `NODE_ENV !== 'test'`,
+antes de `server.listen(...)`. Gate completo verde após a mudança.
