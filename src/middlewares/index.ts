@@ -72,7 +72,7 @@ function setAccessTokenCookie(res: express.Response, token: string) {
 const API_KEY_RATE_LIMIT = 120;
 const API_KEY_RATE_WINDOW_SECONDS = 60;
 const rateLimitRedis = new Redis(getRedisUrl(), { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
-rateLimitRedis.on('error', (err) => logger.error('API key rate limiter Redis error', err.message));
+rateLimitRedis.on('error', (err) => logger.error('API key rate limiter Redis error', err));
 
 async function isApiKeyRateLimited(apiKeyId: string): Promise<boolean> {
   const key = `ratelimit:apikey:${apiKeyId}`;

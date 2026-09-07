@@ -12,7 +12,7 @@ import { getRedisUrl } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 
 const redisClient = new Redis(getRedisUrl(), { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
-redisClient.on('error', (err) => logger.error('Rate limiter Redis error', err.message));
+redisClient.on('error', (err) => logger.error('Rate limiter Redis error', err));
 
 export const createRateLimiter = (keyPrefix: string, limit: number, windowSeconds: number) =>
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {

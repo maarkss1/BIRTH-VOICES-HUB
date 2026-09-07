@@ -68,13 +68,21 @@ export function findTransactionByIdempotencyKey(idempotencyKey: string): Promise
   return prisma.transaction.findUnique({ where: { idempotencyKey } });
 }
 
-// Atomically reads the wallet, computes the new balance and creates the transaction row, then
-// persists the new balance — all inside one Prisma interactive transaction so a mid-way failure
-// never leaves a `Transaction` row without the matching `Wallet.balanceCents` update (or vice
-// versa). Returns `null` when the tenant has no wallet yet (caller decides how to surface that —
-// never fabricate a wallet here). Lets the raw Prisma error propagate on a duplicate
-// `idempotencyKey` (P2002); the idempotency guard/retry is `billingService.recordTransaction`'s
-// responsibility, not this repository's.
+// Atomically applies the balance delta and creates the matching transaction row inside one Prisma
+// interactive transaction, so a mid-way failure never leaves a `Transaction` row without the
+// matching `Wallet.balanceCents` update (or vice versa). Returns `null` when the tenant has no
+// wallet yet (caller decides how to surface that — never fabricate a wallet here). Lets the raw
+// Prisma error propagate on a duplicate `idempotencyKey` (P2002); the idempotency guard/retry is
+// `billingService.recordTransaction`'s responsibility, not this repository's.
+//
+// The balance update uses Prisma's `increment` (compiles to `SET balanceCents = balanceCents +
+// $amount` in a single UPDATE), not a read-then-write of a separately fetched `wallet.balanceCents`
+// — two concurrent transactions each computing the new balance from their own read would race, and
+// the later UPDATE would silently overwrite the earlier one's change (a lost update), even though
+// each has a distinct `idempotencyKey` and neither is a retry of the other. `UPDATE ... SET x = x +
+// n` is safe under Postgres's default Read Committed isolation because the row lock is held for
+// the statement itself; a second concurrent UPDATE on the same row blocks until the first commits,
+// then re-reads the now-current value — no lost update, no SERIALIZABLE/retry loop needed.
 export function createTransactionAtomic(input: {
   tenantId: string;
   type: string;
@@ -87,25 +95,24 @@ export function createTransactionAtomic(input: {
     const wallet = await tx.wallet.findUnique({ where: { tenantId: input.tenantId } });
     if (!wallet) return null;
 
-    const balanceAfterCents = wallet.balanceCents + input.amountCents;
+    const updatedWallet = await tx.wallet.update({
+      where: { id: wallet.id },
+      data: { balanceCents: { increment: input.amountCents } },
+    });
 
-    const transaction = await tx.transaction.create({
+    return tx.transaction.create({
       data: {
         walletId: wallet.id,
         tenantId: input.tenantId,
         type: input.type,
         amountCents: input.amountCents,
-        balanceAfterCents,
+        balanceAfterCents: updatedWallet.balanceCents,
         status: 'completed',
         description: input.description,
         externalReference: input.externalReference,
         idempotencyKey: input.idempotencyKey,
       },
     });
-
-    await tx.wallet.update({ where: { id: wallet.id }, data: { balanceCents: balanceAfterCents } });
-
-    return transaction;
   });
 }
 

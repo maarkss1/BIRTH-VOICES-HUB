@@ -1,5 +1,5 @@
 import * as settingRepository from '../repositories/settingRepository.js';
-import { prisma } from '../lib/prisma.js';
+import * as tenantAiConsentRepository from '../repositories/tenantAiConsentRepository.js';
 
 const DEFAULT_SETTINGS = {
   theme: 'light',
@@ -123,28 +123,18 @@ function toAiConsentRecord(row: {
 }
 
 export async function getAiConsent(tenantId: string): Promise<AiConsentRecord> {
-  const row = await prisma.tenantAiConsent.findUnique({ where: { tenantId } });
+  const row = await tenantAiConsentRepository.findByTenantId(tenantId);
   if (!row) return NO_CONSENT_RECORD;
   return toAiConsentRecord(row);
 }
 
 export async function grantAiConsent(tenantId: string, actorUserId: string): Promise<AiConsentRecord> {
-  const grantedAt = new Date();
-  const row = await prisma.tenantAiConsent.upsert({
-    where: { tenantId },
-    create: { tenantId, granted: true, grantedAt, grantedByUserId: actorUserId },
-    update: { granted: true, grantedAt, revokedAt: null, grantedByUserId: actorUserId },
-  });
+  const row = await tenantAiConsentRepository.grant(tenantId, new Date(), actorUserId);
   return toAiConsentRecord(row);
 }
 
 export async function revokeAiConsent(tenantId: string, actorUserId: string): Promise<AiConsentRecord> {
-  const revokedAt = new Date();
-  const row = await prisma.tenantAiConsent.upsert({
-    where: { tenantId },
-    create: { tenantId, granted: false, revokedAt, grantedByUserId: actorUserId },
-    update: { granted: false, revokedAt, grantedByUserId: actorUserId },
-  });
+  const row = await tenantAiConsentRepository.revoke(tenantId, new Date(), actorUserId);
   return toAiConsentRecord(row);
 }
 
