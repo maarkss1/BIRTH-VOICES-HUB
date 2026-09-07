@@ -1,7 +1,7 @@
 - De: Agente 10 (Infraestrutura, Observabilidade e Deploy)
 - Para: Agente 02 (Produto, Navegação e UX)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -98,3 +98,40 @@ tenant-scoped e usado pelo Agente 04 para custo/tokens/latência, retorna isso a
 Mesmo padrão de entrega do Agente 04 para custo/tokens/latência de IA — ver
 `.agents/handoffs/onda-4/04-para-02-telemetria-custo-ia-disponivel.md` para o precedente de como
 ele documentou a leitura de `GET /api/metrics` no lado do frontend.
+
+## Resolução
+
+`pages/Dashboard/Overview.tsx`:
+
+1. Novo estado `slaState` (`{ status: FetchStatus; samples: MetricEntry[] }`) e `fetchSla()`, no
+   mesmo padrão de `fetchCalls`/`fetchAgents`/`fetchReady` já existentes: `GET /api/metrics`,
+   filtra `metrics.filter(m => m.name === 'platform_ready_check')`, ordena por `timestamp desc`.
+   Chamado junto no `useEffect` de carga inicial da página.
+2. Uptime calculado só sobre as amostras dentro da janela de 24h (`SLA_WINDOW_MS`), conforme
+   sugerido no handoff para uma janela mais limpa: `(amostras com value === 1) / (total na janela) *
+   100`. Com zero amostras na janela (scheduler ainda não rodou um tick para este tenant, ou é um
+   tenant novo), o card mostra `—` e a legenda explícita "Ainda sem amostras suficientes" — nunca um
+   número fabricado, incluindo o estado de erro de rede (`status === 'error'`) tratado à parte pelo
+   `RealStatCard` já existente (mostra "Erro" em vermelho, não um percentual).
+3. Card "Disponibilidade (SLA)" adicionado como um `RealStatCard` a mais na grade de KPIs (grade
+   ajustada de 5 para 6 colunas em telas largas), ao lado de Agentes/Chamadas/Duração/Taxa de
+   Conclusão. O `Alert` de telemetria não instrumentada foi reduzido para cobrir só
+   tokens/custo/latência/CSAT (que continuam sem card real nesta entrega — fora do escopo deste
+   handoff) — "disponibilidade (SLA)" foi removida da lista porque deixou de ser verdade.
+4. Limitação de amostragem exibida honestamente, sem esconder: o `tooltip` do card (mesmo padrão
+   `Tooltip` já usado nos outros KPIs) explica que é uma amostragem a cada ~5 minutos, não uma
+   medição contínua, e que uma indisponibilidade mais curta que o intervalo entre amostras pode não
+   aparecer. A legenda do card mostra o número de amostras da janela de 24h e a cadência ("a cada 5
+   min"). Quando a amostra mais recente tem `value === 0`, a legenda também aponta qual componente
+   falhou (`tags.database`/`tags.redis`), via `describeSlaFailure()`.
+5. Nenhuma mudança em `src/services/slaScheduler.ts`, `src/controllers/health.controller.ts`,
+   `src/repositories/tenantRepository.ts` (fora do meu domínio) nem em `server.ts` (wiring pendente
+   do Coordenador, `.agents/handoffs/onda-4/10-para-00-wire-sla-scheduler.md` — o card já está pronto
+   para mostrar dado real assim que a primeira amostra existir).
+
+CSAT continua sem fonte real e sem card — mantido no `Alert` genérico, conforme instruído.
+
+Validado: `npm run typecheck`, `npm run lint` (zero erros/warnings novos em
+`pages/Dashboard/Overview.tsx`), `npm run test` (381 passed / 1 skipped — não há
+`Overview.test.tsx` nesta base), `npm run test:e2e` (3 passed) e `npm run build`, todos verdes após
+a troca.
