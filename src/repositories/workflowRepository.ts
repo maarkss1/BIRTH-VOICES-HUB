@@ -79,3 +79,48 @@ export async function updateMetadataIfVersion(id: string, expectedVersion: numbe
   });
   return count;
 }
+
+// --- WorkflowVersion (publish/rollback archive) ---
+// Backing store for workflowService.ts's publish/rollback history — see the `WorkflowVersion`
+// model comment in prisma/schema.prisma and `.agents/handoffs/onda-5/01-para-07-schema-workflow-
+// version-pronto.md`. One immutable row per version that was ever actually live for a workflow.
+
+// Lets the raw Prisma error propagate on a duplicate (workflowId, version) pair (P2002, enforced
+// by `@@unique([workflowId, version])`) — same division of responsibility as
+// billingRepository.createTransactionAtomic: the archive-or-skip decision belongs to
+// workflowService.archivePublishedVersion, not to this repository.
+export function createWorkflowVersion(input: {
+  workflowId: string;
+  version: number;
+  nodes: unknown;
+  edges: unknown;
+  publishedBy: string;
+}) {
+  return prisma.workflowVersion.create({
+    data: {
+      workflowId: input.workflowId,
+      version: input.version,
+      nodes: input.nodes as Prisma.InputJsonValue,
+      edges: input.edges as Prisma.InputJsonValue,
+      publishedBy: input.publishedBy,
+    },
+  });
+}
+
+// Newest-first, so callers that just want "the archive" don't need to re-sort.
+export function findWorkflowVersionsForWorkflow(workflowId: string) {
+  return prisma.workflowVersion.findMany({
+    where: { workflowId },
+    orderBy: { version: 'desc' },
+  });
+}
+
+export function findWorkflowVersion(workflowId: string, version: number) {
+  return prisma.workflowVersion.findUnique({
+    where: { workflowId_version: { workflowId, version } },
+  });
+}
+
+export function isUniqueConstraintViolation(err: unknown): err is Prisma.PrismaClientKnownRequestError {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
