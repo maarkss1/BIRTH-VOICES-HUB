@@ -81,7 +81,7 @@ export async function startCall(params: { callSid: string; from: string; to: str
     direction: 'inbound',
     from: params.from,
     to: params.to,
-  });
+  }, agent.id);
 
   const configuredGreeting = configString(agent.configuration, 'greeting', DEFAULT_GREETING);
   const openingQuestion = getWorkflowOpeningQuestion(workflow);
@@ -152,7 +152,7 @@ export async function startOutboundCall(params: { sessionId: string; callSid: st
     from: metadata.from ?? '',
     to: metadata.to ?? '',
     ...(metadata.context ?? {}),
-  });
+  }, agent.id);
   if (workflow) metadata.workflow = workflow;
 
   const baseGreeting = renderTemplate(
