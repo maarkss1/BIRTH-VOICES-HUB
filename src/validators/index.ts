@@ -56,6 +56,12 @@ export const changePlanSchema = z.object({
   effectiveAt: z.enum(['immediate', 'next_cycle']).optional(),
 });
 
+// apiKey.controller.ts (Agente 01) — POST /api/developers/keys.
+export const createApiKeySchema = z.object({
+  name: z.string().min(1, 'Nome da chave é obrigatório').max(200, 'Nome da chave muito longo'),
+  expiresAt: z.string().datetime({ message: 'expiresAt deve ser uma data ISO 8601 válida' }).optional(),
+});
+
 export const agentSchema = z.object({
   name: z.string().min(1, 'Nome do agente é obrigatório'),
   model: z.string().min(1, 'Modelo é obrigatório'),

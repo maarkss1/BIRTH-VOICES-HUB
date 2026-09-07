@@ -29,6 +29,7 @@ model Tenant {
   atlasGRCallResults AtlasGRCallResult[]
   wallet             Wallet?
   transactions       Transaction[]
+  apiKeys            APIKey[]
 }
 
 model User {
@@ -43,9 +44,10 @@ model User {
   tenantId String?
   tenant   Tenant? @relation(fields: [tenantId], references: [id])
 
-  memberships Membership[]
-  sessions    Session[]
-  auditLogs   AuditLog[]
+  memberships    Membership[]
+  sessions       Session[]
+  auditLogs      AuditLog[]
+  createdApiKeys APIKey[]
 
   @@index([tenantId])
 }
@@ -239,17 +241,19 @@ model TenantAiConsent {
   @@index([tenantId])
 }
 
-// SECURITY.md states every model except "core global models" carries a tenantId. APIKey and
-// Integration break that invariant today. They are currently dead schema — grep finds zero
-// references to `prisma.aPIKey` / `prisma.integration` anywhere in src/ or lib/ — so there is no
-// live cross-tenant leak yet. But both are clearly meant to hold tenant-owned data (a tenant's own
-// API key, a tenant's configured provider credentials per AGENTS.md's Agent 06/Integrations scope)
-// once wired up. Whichever agent implements them MUST add a required `tenantId` (with the same
-// `@relation(fields: [tenantId], references: [id], onDelete: Cascade)` + `@@index([tenantId])`
-// shape used by every other tenant-scoped model above) as part of that work — not bolt it on after
-// the first cross-tenant report. Flagged by Agent 01 (schema owner) during the Onda 1 tenancy
-// audit; not fixed preemptively here because the correct shape (nullable vs required, one row per
-// tenant vs many) depends on product decisions those agents haven't made yet.
+// SECURITY.md states every model except "core global models" carries a tenantId. Integration
+// still breaks that invariant today (dead schema — grep finds zero references to
+// `prisma.integration` anywhere in src/ or lib/), left for whichever agent (06) wires it up, per
+// the same note that used to cover APIKey here. APIKey itself was fixed as part of implementing
+// its real backend (.agents/handoffs/onda-2/02-para-09-api-key-backend.md via
+// .agents/handoffs/onda-4/09-para-00-api-key-backend-fora-de-escopo.md): it now carries a required
+// `tenantId` with the same `@relation(..., onDelete: Cascade)` + `@@index([tenantId])` shape used
+// by every other tenant-scoped model above, plus `createdByUserId` (the admin who issued it,
+// SetNull on user deletion so a key survives its issuer being removed), `lastUsedAt` (updated on
+// every successful authentication, for the "last used" column in the UI) and `revokedAt`
+// (non-null = immediately rejected by the API-key auth middleware, checked live on every request —
+// no cache, so revocation takes effect immediately per the LGPD/security requirement that a leaked
+// or retired key stop working without delay).
 // Persists the result callback Bland AI posts back once a call dispatched via the AtlasGR
 // prospecting integration finishes (`POST /api/webhooks/bland/:token`,
 // src/features/prospecting/routes/atlasgr.routes.ts — Agente 06's domain). Before this model the
@@ -288,14 +292,24 @@ model AtlasGRCallResult {
 }
 
 model APIKey {
-  id      String @id @default(uuid())
-  keyHash String @unique
-  name    String
-  scopes  Json   @default("[]")
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  keyHash  String @unique
+  name     String
+  scopes   Json   @default("[]")
 
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  expiresAt DateTime?
+  createdByUserId String?
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([tenantId])
+  @@index([createdByUserId])
 }
 
 model Integration {
