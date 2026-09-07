@@ -57,6 +57,14 @@ export function findWorkflowById(id: string) {
   return prisma.workflow.findUnique({ where: { id } });
 }
 
+// Tenant-scoped lookup by id: the ONLY safe way to resolve a workflow id coming from a URL
+// param (GET/POST /workflow/:id/...). Never call findWorkflowById with a client-supplied id
+// without also checking tenantId — that would let one tenant address another tenant's workflow
+// by guessing/enumerating ids (AGENTS.md §15).
+export function findWorkflowByIdForTenant(id: string, tenantId: string) {
+  return prisma.workflow.findFirst({ where: { id, tenantId, deletedAt: null } });
+}
+
 // Optimistic concurrency: only applies the metadata write if `version` still matches what the
 // caller last read. Returns the affected row count so callers can detect a lost-update race
 // (two collaborators editing locks/comments on the same workflow at once) and retry.
