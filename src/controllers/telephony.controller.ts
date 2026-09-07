@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import twilio from 'twilio';
 import * as telephonyService from '../services/telephonyService.js';
-import type { VoiceOverride } from '../services/workflowRuntimeService.js';
+import type { TransferDetails, VoiceOverride } from '../services/workflowRuntimeService.js';
 import { logger } from '../lib/logger.js';
 
 const { VoiceResponse } = twilio.twiml;
@@ -35,6 +35,22 @@ function sayOptionsFor(voiceOverride?: VoiceOverride): SayAttributes {
   return {
     language: (voiceOverride.language ?? 'pt-BR') as SayAttributes['language'],
     voice: voiceOverride.voice as SayAttributes['voice'],
+  };
+}
+
+type DialAttributes = Parameters<InstanceType<typeof VoiceResponse>['dial']>[0];
+
+/**
+ * Builds the attributes for the `<Dial>` a `TransferDetails` (see
+ * `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`) produces. `timeoutSec`/
+ * `record` are already validated/defaulted on the runtime side (Agente 04) — this only maps them
+ * onto Twilio's own attribute names/values (`record: true` → the `'record-from-answer'` TwiML
+ * value; `false` omits the attribute, matching Twilio's own default of not recording).
+ */
+function dialOptionsFor(transferDetails: TransferDetails): DialAttributes {
+  return {
+    timeout: transferDetails.timeoutSec,
+    record: transferDetails.record ? 'record-from-answer' : undefined,
   };
 }
 
@@ -130,6 +146,24 @@ export async function gatherHandler(req: Request, res: Response) {
   }
 
   const sayOptions = sayOptionsFor(result.voiceOverride);
+
+  // A published `human_handoff` node (see
+  // `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`) has no workflow resumption —
+  // a real telephony bridge takes over the call, so this speaks `transferDetails.message` and
+  // dials `transferDetails.to` for real instead of opening another `<Gather>`, regardless of
+  // `result.shouldEnd` (the runtime always reports `false` there since it never marks the workflow
+  // itself "ended" on a transfer — see the contract doc).
+  if (result.transferDetails) {
+    twiml.say(sayOptions, result.reply);
+    twiml.dial(dialOptionsFor(result.transferDetails), result.transferDetails.to);
+    // No `action` URL: Twilio simply ends the `<Response>` once the `<Dial>` attempt finishes
+    // (answered-and-hung-up, no-answer, busy, or failed all behave the same way here) — there is
+    // no path back into the workflow after a transfer. Returning to the original conversation on a
+    // failed/unanswered transfer (via `action` + a `DialCallStatus` callback route) is a real
+    // telephony UX improvement, deliberately not implemented in this round — see
+    // `.agents/handoffs/onda-6/05-para-00-transfer-dial-outcome-followup.md`.
+    return sendTwiml(res, twiml);
+  }
 
   // A published Studio `end` node is a real termination boundary. Do not create another Gather
   // after it; speak the final response once and close the call deterministically.
