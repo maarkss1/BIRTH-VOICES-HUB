@@ -1,6 +1,6 @@
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { getRedisConnectionOptions, getRedisUrl } from '../lib/env.js';
+import { getRedisConnectionOptions, getRedisUrl, getRedisRetryStrategy } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { checkPlatformHealth } from '../controllers/health.controller.js';
 import { listActiveTenantIds } from '../repositories/tenantRepository.js';
@@ -100,6 +100,7 @@ export function startSlaScheduler(): { queue: Queue; worker: Worker } | undefine
       maxRetriesPerRequest: 1,
       connectTimeout: 2000,
       commandTimeout: 2000,
+      retryStrategy: getRedisRetryStrategy(),
     });
     redisClient.on('error', (err) => logger.error('[SlaScheduler] Redis client error', err.message));
 

@@ -55,6 +55,13 @@ COPY --from=builder /app/package.json ./
 # Add Prisma schema for runtime commands if necessary
 COPY prisma/ ./prisma/
 
+# server.ts loads docs/api/openapi.yaml at startup to mount Swagger UI at /api-docs. That COPY was
+# missing from this stage entirely, so every real container hit ENOENT on that file, swallowed by
+# server.ts's own try/catch around swaggerUi.setup(...) — /health and /ready stayed green, but
+# /api-docs silently never worked in any real deploy (found while investigating an unrelated PR #44
+# smoke-test failure; see .agents/handoffs/onda-5/00-para-10-openapi-nao-copiado-docker-image.md).
+COPY docs/ ./docs/
+
 # Set ownership
 RUN chown -R expressjs:nodejs /app
 
