@@ -8,21 +8,13 @@ import {
   deleteWebhookEndpointForTenant,
   regenerateWebhookEndpointSecret,
 } from '../services/webhookEndpointService.js';
-import { WebhookEndpointSchemaNotReadyError } from '../repositories/webhookEndpointRepository.js';
 
 // Shared by every handler below: WebhookEndpointServiceError carries the right HTTP status for a
-// business-rule rejection (limit reached, not found); WebhookEndpointSchemaNotReadyError means the
-// underlying Prisma model has not landed yet (see
-// .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint.md) — reported as 503 (service
-// temporarily unavailable), never as a fabricated empty success. Returns true when it handled the
-// error (caller returns immediately); false means the caller should rethrow.
+// business-rule rejection (limit reached, not found). Returns true when it handled the error
+// (caller returns immediately); false means the caller should rethrow.
 function handleKnownError(err: unknown, res: Response): boolean {
   if (err instanceof WebhookEndpointServiceError) {
     res.status(err.status).json({ error: err.message });
-    return true;
-  }
-  if (err instanceof WebhookEndpointSchemaNotReadyError) {
-    res.status(503).json({ error: 'Endpoints de webhook por tenant ainda não estão disponíveis nesta implantação.' });
     return true;
   }
   return false;
