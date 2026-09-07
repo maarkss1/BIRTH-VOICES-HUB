@@ -63,11 +63,12 @@ export class WebhookService {
         return;
       }
 
-      // Resolving per-tenant endpoints depends on a Prisma model
-      // (.agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint.md) that does not exist yet —
-      // until that lands, resolution throws WebhookEndpointSchemaNotReadyError for every tenant,
-      // which this catch treats exactly like "tenant has no active endpoint configured", falling
-      // through to the legacy env-var behavior below unchanged.
+      // Defensive: resolution is a real Prisma read against `TenantWebhookEndpoint` (see
+      // .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint-pronto.md) and should not throw
+      // in normal operation, but `dispatch()` itself is documented to never throw either — a
+      // transient DB failure here is treated the same as "tenant has no active endpoint
+      // configured", falling through to the legacy env-var behavior below rather than dropping the
+      // event entirely.
       let hasAnyActiveEndpoint = false;
       let targets: { endpointId: string; url: string }[] = [];
       try {

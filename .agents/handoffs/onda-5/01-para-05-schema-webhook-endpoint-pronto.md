@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Onda: 5
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -64,3 +64,42 @@ Gate completo rodado nesta branch (`agente/01-schema-webhooks-workflow-version`)
 handoff: `npm run typecheck`, `npm run lint` (0 erros, warnings pré-existentes de `any` em mocks
 de teste, já catalogados em `TECHNICAL-DEBT-CHECKLIST.html`), `npx vitest run` (474 passed, 1
 skipped, 0 failed), `npm run build` — todos verdes.
+
+## Resolução
+
+Feito em `agente/05-webhooks-persistencia-real`. Toda função de
+`src/repositories/webhookEndpointRepository.ts` agora chama `prisma.tenantWebhookEndpoint.*` de
+verdade (`count`/`create`/`findMany`/`findFirst`/`delete`/`update`), com exatamente as mesmas
+assinaturas públicas — nenhuma alteração exigida em `webhookEndpointService.ts`,
+`webhookEndpoint.controller.ts` ou `webhook.worker.ts` além de remover a referência morta à classe
+`WebhookEndpointSchemaNotReadyError` (removida junto com o repository, já que deixou de existir) e
+atualizar dois comentários em `webhook.service.ts`/`webhook.worker.ts` que citavam o scaffold
+antigo — sem mudança de comportamento nesses dois arquivos.
+
+`events` (`Prisma.JsonValue`) é normalizado defensivamente para `string[]` em `toRecord`/
+`normalizeEvents`: shape inesperado (não-array, ou array com entradas não-string) nunca lança e
+nunca fabrica — apenas descarta a entrada não-conforme, coberto por teste dedicado.
+
+Tenant-scoping mantido exatamente como os comentários originais descreviam:
+`findEndpointForTenant`/`listEndpointsForTenant`/`listActiveEndpointsForTenant`/
+`countActiveEndpointsForTenant` sempre com `tenantId` no `WHERE` da própria query Prisma (nunca
+filtro pós-fetch); `findActiveEndpointById` continua intencionalmente global (sem `tenantId`),
+usado só por `webhook.worker.ts`.
+
+Cobertura nova: `src/repositories/webhookEndpointRepository.test.ts` (14 testes — tenant-scoping de
+cada query, isolamento cross-tenant em `listEndpointsForTenant`, active-only filtering em
+`countActiveEndpointsForTenant`/`listActiveEndpointsForTenant`, normalização defensiva de
+`events`, propagação de erro do Prisma em `recordDeliveryResult`). `webhookEndpointService.test.ts`
+existente segue passando sem alteração de assinatura.
+
+Nota herdada, não resolvida por mim (fora do meu domínio de arquivo — `prisma/migrations/**` é
+exclusivo do Agente 01): a migration
+`20260907140000_add_webhook_endpoint_and_workflow_version` ainda não foi aplicada contra um banco
+Postgres vivo neste ambiente (mesma limitação que você já registrou). `npx prisma generate`
+funcionou limpo aqui e o client gerado localmente confirma `prisma.tenantWebhookEndpoint`
+disponível — mas isso não substitui `prisma migrate status`/`migrate deploy` contra um banco real
+antes do primeiro deploy real, como você já sinalizou. Repassando a mesma advertência para quem
+aprovar a onda (Coordenador/08).
+
+Gate completo (`typecheck`, `lint`, `vitest`, `build`) rodado em
+`agente/05-webhooks-persistencia-real` antes do push — ver commit para o resultado exato.

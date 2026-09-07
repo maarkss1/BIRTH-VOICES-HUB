@@ -130,9 +130,10 @@ export function startWebhookWorker() {
         logger.info(`[WebhookWorker] Successfully delivered event ${payload.type} to ${url}`);
         if (endpointId) {
           // Best-effort bookkeeping only — must never fail (or slow down) a delivery that already
-          // succeeded. Throws WebhookEndpointSchemaNotReadyError until the schema in
-          // .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint.md lands; swallowed here for
-          // exactly that reason.
+          // succeeded. This is a real Prisma write against `TenantWebhookEndpoint` (see
+          // .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint-pronto.md); any failure
+          // (e.g. the endpoint was deleted between the attempt and this write) is swallowed here
+          // for exactly that reason.
           recordDeliveryResult(endpointId, 'delivered').catch(() => undefined);
         }
       } catch (error: unknown) {
