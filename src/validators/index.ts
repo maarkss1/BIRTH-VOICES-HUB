@@ -50,6 +50,12 @@ export const updateUserSchema = z.object({
   password: z.string().min(6).optional(),
 });
 
+// billing.controller.ts (Agente 12) — POST /api/billing/change-plan.
+export const changePlanSchema = z.object({
+  planId: z.string().min(1, 'planId é obrigatório'),
+  effectiveAt: z.enum(['immediate', 'next_cycle']).optional(),
+});
+
 export const agentSchema = z.object({
   name: z.string().min(1, 'Nome do agente é obrigatório'),
   model: z.string().min(1, 'Modelo é obrigatório'),
