@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Onda: 5
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -68,3 +68,21 @@ Ver `.agents/handoffs/onda-5/00-para-04-motor-execucao-knowledge-tool.md` (taref
 `docs/patterns/workflow-execution-contract.md` §2/§3 (contrato atualizado nesta rodada). Prioridade
 `normal`, não `bloqueador`: sem esta mudança o runtime não fabrica nada e não quebra nenhuma
 chamada — apenas não usa a base de conhecimento real ainda.
+
+## Resolução
+
+Aplicadas as duas mudanças de uma linha exatamente como propostas, em `src/services/
+telephonyService.ts`:
+
+- `startCall` (agora em torno da linha 80): `initializeWorkflowRuntime(agent.tenantId, { ... },
+  agent.id)` — `agent` já resolvido via `resolveAgent(params.to)` no topo da função.
+- `startOutboundCall` (agora em torno da linha 150): `initializeWorkflowRuntime(session.tenantId,
+  { ... }, agent.id)` — `agent` já resolvido via `agentRepository.findAgentById(session.agentId)`
+  logo acima.
+
+Nenhum outro comportamento alterado; o parâmetro é opcional e puramente aditivo. Gate completo
+(`typecheck`, `lint`, `vitest run`, `build`) executado na branch `agente/05-pass-agentid` após a
+mudança — ver resumo do Agente 05 no handoff de conclusão da Onda 5 / mensagem final da sessão para
+o resultado detalhado. `__tests__/telephonyService.test.ts` (propriedade do Agente 08) não precisou
+de nenhuma alteração — o mock de `initializeWorkflowRuntime` não valida argumentos por padrão, como
+previsto neste handoff.
