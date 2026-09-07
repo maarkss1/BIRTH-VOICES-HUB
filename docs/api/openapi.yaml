@@ -29,6 +29,19 @@ components:
         instead relies on the httpOnly `access_token`/`refresh_token` cookies set on those same
         responses — both mechanisms are accepted by `requireTenant`/`attachAuthIfPresent`, but a
         non-browser SDK client must use the `Authorization: Bearer <token>` header shown here.
+    apiKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: 'bvhk_live_<secret>'
+      description: >
+        Global alternative to `bearerAuth`/cookie auth for **any** authenticated route in this
+        document, not only the API Keys endpoints below — issued via `POST /developers/keys` and
+        sent as `Authorization: Bearer bvhk_live_<secret>`. `getAuthUser`
+        (`src/middlewares/index.ts`) resolves a token with this prefix through the API-key path
+        instead of JWT verification, and the resulting `req.user`/`req.tenantId` are those of the
+        admin who created the key (same tenant, same live role) — not a synthetic identity. A
+        revoked or expired key is rejected on the very next request (live database read, never a
+        cached/JWT-embedded claim).
 
   parameters:
     idPathParam:
@@ -333,6 +346,120 @@ components:
           type: string
           format: date-time
 
+    ApiKeyMetadata:
+      type: object
+      description: >
+        Shape returned by `GET /developers/keys` and by the `apiKey` field of the revoke
+        endpoints. Deliberately excludes the hash and the plaintext secret — see
+        `src/repositories/apiKeyRepository.ts`'s `API_KEY_SAFE_SELECT`, which never fetches
+        `keyHash` in the first place, so there is no code path here that could leak it even by
+        accident.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set on the key's first successful authenticated request; `null` if never used.
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: '`null` means the key never expires.'
+        revoked:
+          type: boolean
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    WalletSummary:
+      type: object
+      description: >
+        A tenant's billing wallet and current plan. The whole object is `null` (not a fabricated
+        zero-balance wallet) when the tenant has never been onboarded to billing — see
+        `billingService.getWalletSummary`.
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        balanceCents:
+          type: integer
+        currency:
+          type: string
+        planId:
+          type: string
+          nullable: true
+        planName:
+          type: string
+          nullable: true
+        planStatus:
+          type: string
+          enum: [inactive, active, past_due, canceled, trialing]
+        currentPeriodEnd:
+          type: string
+          format: date-time
+          nullable: true
+
+    TransactionSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        amountCents:
+          type: integer
+          description: Signed — positive is a credit, negative is a debit.
+        balanceAfterCents:
+          type: integer
+        status:
+          type: string
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    PlanOption:
+      type: object
+      description: Global plan catalog entry — the same list for every tenant (per-tenant custom pricing is out of scope).
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        name:
+          type: string
+        priceCents:
+          type: integer
+        currency:
+          type: string
+        billingInterval:
+          type: string
+
+    NotificationSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        message:
+          type: string
+        isRead:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
     ErrorResponse:
       type: object
       properties:
@@ -353,6 +480,7 @@ components:
 
 security:
   - bearerAuth: []
+  - apiKeyAuth: []
 
 tags:
   - name: Auth
@@ -371,6 +499,9 @@ tags:
   - name: Organizations
   - name: Users
   - name: AuditLog
+  - name: ApiKeys
+  - name: Billing
+  - name: Notifications
   - name: AI
   - name: Observability
   - name: Telephony
@@ -2030,6 +2161,391 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  /developers/keys:
+    post:
+      tags: [ApiKeys]
+      summary: Create a new tenant API key
+      description: >
+        Admin-only, tenant-scoped (`requireTenant` + `requireRole(['admin'])` — same
+        authorization level as `/users` and `/billing/*`; a leaked or over-issued key is a
+        security incident, not a routine self-service action for every role). The plaintext
+        `key` in the `201` response is present **exactly once, only in this response** — it is
+        SHA-256 hashed before being persisted and can never be retrieved again afterwards. If
+        the caller loses it, the only remedy is to revoke this key and create a new one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Human-readable label for the key (e.g. "CI pipeline", "Zapier integration").
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: Optional ISO 8601 expiration. Omitted/absent means the key never expires.
+      responses:
+        '201':
+          description: Key created. Copy `key` now — the server will never return it again.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      createdAt:
+                        type: string
+                        format: date-time
+                      expiresAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                  key:
+                    type: string
+                    example: 'bvhk_live_9f2c...'
+                    description: >
+                      Plaintext secret. Present only in this response — not stored anywhere in
+                      recoverable form, never logged, never returned by `GET /developers/keys`
+                      or any other endpoint.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags: [ApiKeys]
+      summary: List the tenant's API keys
+      description: Admin-only. Metadata only — never includes the hash or the plaintext key.
+      responses:
+        '200':
+          description: The tenant's API keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKeyMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /developers/keys/{id}:
+    delete:
+      tags: [ApiKeys]
+      summary: Revoke an API key
+      description: >
+        Admin-only. Alias of `POST /developers/keys/{id}/revoke` — same controller, same audit
+        action (`API_KEY_REVOKE`). Tenant-scoped lookup: a key belonging to another tenant is
+        indistinguishable from a nonexistent one (`404`). Idempotent — revoking an
+        already-revoked key returns `200` rather than an error.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  apiKey:
+                    $ref: '#/components/schemas/ApiKeyMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /developers/keys/{id}/revoke:
+    post:
+      tags: [ApiKeys]
+      summary: Revoke an API key (explicit-verb alias)
+      description: >
+        Identical behavior to `DELETE /developers/keys/{id}` — provided for callers/UIs that
+        prefer an explicit action verb over the `DELETE` HTTP method.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  apiKey:
+                    $ref: '#/components/schemas/ApiKeyMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /billing/summary:
+    get:
+      tags: [Billing]
+      summary: Wallet balance and current plan
+      description: >
+        Admin-only. `wallet: null` is a real, explicit empty state (tenant never onboarded to
+        billing, no `Wallet` row yet) — not an error; render it as an empty state, never a
+        fabricated zero-balance wallet.
+      responses:
+        '200':
+          description: Wallet summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet:
+                    allOf:
+                      - $ref: '#/components/schemas/WalletSummary'
+                    nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /billing/transactions:
+    get:
+      tags: [Billing]
+      summary: Paginated transaction history
+      description: Admin-only. Tenant-scoped (`req.tenantId`, never a query param), ordered newest-first.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number. Non-numeric or out-of-range values fall back to `1`.
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Entries per page, clamped to `[1, 100]`. Non-numeric values fall back to the default.
+      responses:
+        '200':
+          description: Page of transactions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TransactionSummary'
+                  page:
+                    type: integer
+                  pageSize:
+                    type: integer
+                  total:
+                    type: integer
+                  totalPages:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /billing/plans:
+    get:
+      tags: [Billing]
+      summary: List available subscription plans
+      description: >
+        Any authenticated tenant member — not admin-gated, unlike the other `/billing/*`
+        endpoints, since this is a read-only global catalog (same list for every tenant), not
+        tenant-specific data.
+      responses:
+        '200':
+          description: Active plan catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PlanOption'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /billing/change-plan:
+    post:
+      tags: [Billing]
+      summary: Upgrade or downgrade the tenant's plan
+      description: >
+        Admin-only. Only `effectiveAt: "immediate"` is implemented: `Wallet` has no
+        `currentPeriodStart`, so there is no way to compute a prorated amount or a "next cycle"
+        date — a request with `effectiveAt: "next_cycle"` gets an explicit `400`
+        (`ProrationNotSupportedError`), never a silent fallback to immediate. On success, also
+        raises an in-app notification for the acting admin (best-effort — a failure to notify
+        never fails the plan change itself, which has already committed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId]
+              properties:
+                planId:
+                  type: string
+                effectiveAt:
+                  type: string
+                  enum: [immediate, next_cycle]
+                  default: immediate
+                  description: '`next_cycle` is accepted by the schema but rejected with `400` — see description above.'
+      responses:
+        '200':
+          description: Plan changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet:
+                    $ref: '#/components/schemas/WalletSummary'
+        '400':
+          description: Validation error, or `effectiveAt=next_cycle` (not supported — see `ProrationNotSupportedError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`planId` does not exist or is inactive.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Paginated notification feed for the caller
+      description: >
+        Scoped to `req.user.id` (never a query/body param) — not admin-gated, unlike
+        `/billing/*` and `/developers/keys`: any authenticated tenant member reads and manages
+        only their own notifications. Includes `unreadCount` for the bell-badge UI.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number. Non-numeric or out-of-range values fall back to `1`.
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Entries per page, clamped to `[1, 100]`. Non-numeric values fall back to the default.
+      responses:
+        '200':
+          description: Page of notifications.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NotificationSummary'
+                  unreadCount:
+                    type: integer
+                  page:
+                    type: integer
+                  pageSize:
+                    type: integer
+                  total:
+                    type: integer
+                  totalPages:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      description: >
+        Ownership is verified against `req.user.id` inside the service/repository layer; a
+        notification belonging to another user resolves to the same `404` as one that does not
+        exist at all — never reveals that a resource exists in someone else's account.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Marked read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/NotificationSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all of the caller's notifications as read
+      description: Bulk action for the notification panel's header ("mark all as read").
+      responses:
+        '200':
+          description: Marked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updatedCount:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /chat:
     post:
