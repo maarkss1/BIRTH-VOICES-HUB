@@ -77,7 +77,10 @@ describe('workflow publish production-runtime gate', () => {
 
     await publishWorkflow('tenant-1', 'user-1');
 
-    expect(mockUpsert).toHaveBeenCalledWith('tenant-1', 'user-1', 'wf-1', { status: 'active' });
+    expect(mockUpsert).toHaveBeenCalledWith('tenant-1', 'user-1', 'wf-1', expect.objectContaining({
+      status: 'active',
+      version: 5,
+    }));
   });
 
   it('refuses a visually valid graph containing a node the phone runtime cannot execute', async () => {

@@ -1,7 +1,7 @@
 - De: Agente 07 (Studio, Workflows e Colaboração)
 - Para: Agente 08 (QA, Testes e Segurança)
 - Onda: 5
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -65,3 +65,47 @@ formato dos argumentos passados ao repository mudou. Ver
 `.agents/handoffs/onda-5/07-para-01-schema-workflow-version.md` para o racional completo da
 mudança (arquivamento de versão publicada) e `src/services/workflowService.ts` (comentários em
 `publishWorkflow`/`archivePublishedVersion`) para o comportamento exato implementado.
+
+## Resolução
+
+Aplicada exatamente a correção de uma linha sugerida em "Alteração necessária"
+(`__tests__/workflowPublishGate.test.ts`, teste `activates a graph that is structurally valid and
+executable by the phone runtime`): a asserção de igualdade exata virou
+
+```ts
+expect(mockUpsert).toHaveBeenCalledWith('tenant-1', 'user-1', 'wf-1', expect.objectContaining({
+  status: 'active',
+  version: 5,
+}));
+```
+
+As duas asserções negativas (`not.toHaveBeenCalledWith(..., { status: 'active' })`) não foram
+tocadas, como o handoff já indicava.
+
+**Validação em duas branches**, para confirmar a observação do próprio handoff em "Teste esperado"
+(gate 100% verde só *na branch de integração, após o merge com `agente/07-workflow-versionamento`*
+— não isoladamente em `agente/08-...` sozinha, já que essa branch ainda não contém a mudança de
+`publishWorkflow()` que passa a incluir `version`/`metadata` em `upsertWorkflow`):
+
+1. **Nesta branch (`agente/08-fix-publishgate-assertion`, criada a partir de
+   `origin/integracao/onda-5`, sem o merge de `agente/07-workflow-versionamento`)**: como esperado,
+   `publishWorkflow()` ainda chama `upsertWorkflow(..., { status: 'active' })` sem `version` —
+   `expect.objectContaining({ status: 'active', version: 5 })` falha porque a chave `version`
+   precisa *existir* na chamada real para o matcher casar (objectContaining não é tolerante à
+   *ausência* de uma chave declarada, só a chaves *extras* não declaradas). Evidência:
+   `npx vitest run` → `473 passed | 1 skipped | 1 failed` (o único vermelho é este teste);
+   `typecheck`, `lint` (0 erros, só os warnings `any` já catalogados em
+   `TECHNICAL-DEBT-CHECKLIST.html`) e `build` ficam 100% verdes.
+2. **Clone de verificação em `/tmp` com `origin/agente/07-workflow-versionamento` mesclada** (merge
+   sem conflitos) **+ o mesmo patch de uma linha aplicado**: `npx vitest run
+   __tests__/workflowPublishGate.test.ts` → `3 passed`, confirmando que a correção é exatamente a
+   necessária para o estado pós-merge descrito por 07 (clone descartado depois, nenhuma mudança
+   ficou fora deste worktree).
+
+Ou seja: a correção está correta e é exatamente a solicitada; o gate 100% verde citado no "Teste
+esperado" original se confirma **na branch de integração após o merge de `agente/07-workflow-
+versionamento` junto com esta branch** — não antes disso. Isso corrige uma expectativa equivocada
+que circulou no despacho desta tarefa (de que a asserção seria tolerante à falta da chave
+`version` antes do merge de 07 chegar); reportado ao coordenador para que o merge de ambas as
+branches na integração seja tratado como uma unidade (não aprovar 08 sem 07, ou vice-versa, nesta
+onda).
