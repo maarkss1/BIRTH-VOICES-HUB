@@ -52,6 +52,27 @@ type FetchStatus = 'loading' | 'ready' | 'error';
 const SLA_READY_CHECK_METRIC = 'platform_ready_check';
 const SLA_WINDOW_MS = 24 * 60 * 60 * 1000; // last 24h — see handoff onda-4/10-para-02-sla-telemetria-overview.md
 
+// AI call telemetry event names persisted by lib/voice-runtime/providers/LLMGateway.ts
+// (tenant-wide, userId: null) — one row per successful call to a real provider. See
+// .agents/handoffs/onda-4/04-para-02-telemetria-custo-ia-disponivel.md. Only written when a
+// provider actually returned a response — never for a consent-blocked call or a full failover
+// failure, so an empty result here means "no AI calls yet", not "pipeline missing".
+const AI_COST_METRIC = 'ai_call_cost_usd';
+const AI_TOKENS_METRIC = 'ai_call_tokens';
+const AI_LATENCY_METRIC = 'ai_call_latency_ms';
+
+function formatUsd(value: number): string {
+  return `US$ ${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+}
+
+function formatTokens(value: number): string {
+  return value.toLocaleString('pt-BR');
+}
+
+function formatMs(value: number): string {
+  return `${Math.round(value).toLocaleString('pt-BR')} ms`;
+}
+
 // Names which real component(s) failed on a given platform_ready_check sample, from its `tags`
 // (`{ database: 'ok'|'error', redis: 'ok'|'error' }`). Returns null when the sample was healthy.
 function describeSlaFailure(sample: MetricEntry | undefined): string | null {
@@ -105,11 +126,13 @@ export default function RebuiltExecutiveOverview() {
     status: 'loading',
     checks: null,
   });
-  // Real SLA samples (GET /api/metrics, name: platform_ready_check) — see
-  // .agents/handoffs/onda-4/10-para-02-sla-telemetria-overview.md. Never a fabricated percentage.
-  const [slaState, setSlaState] = useState<{ status: FetchStatus; samples: MetricEntry[] }>({
+  // Real, tenant-scoped rows from GET /api/metrics — a single fetch, filtered client-side into the
+  // SLA samples (platform_ready_check) and the AI cost/tokens/latency cards below. See
+  // .agents/handoffs/onda-4/10-para-02-sla-telemetria-overview.md and
+  // .agents/handoffs/onda-4/04-para-02-telemetria-custo-ia-disponivel.md. Never a fabricated value.
+  const [metricsState, setMetricsState] = useState<{ status: FetchStatus; metrics: MetricEntry[] }>({
     status: 'loading',
-    samples: [],
+    metrics: [],
   });
 
   const fetchCalls = useCallback(async () => {
@@ -150,23 +173,19 @@ export default function RebuiltExecutiveOverview() {
     }
   }, []);
 
-  // GET /api/metrics is tenant-scoped and mixes several event names (ai_call_*, platform_ready_check,
-  // …) — filter down to the SLA sampler's events client-side, same convention as Agente 04's
-  // handoff for the cost/tokens/latency cards.
-  const fetchSla = useCallback(async () => {
-    setSlaState((prev) => ({ ...prev, status: 'loading' }));
+  // GET /api/metrics is tenant-scoped (requireTenant) and mixes several event names (ai_call_*,
+  // platform_ready_check, …) — fetched once here and filtered client-side per card below.
+  const fetchMetrics = useCallback(async () => {
+    setMetricsState((prev) => ({ ...prev, status: 'loading' }));
     try {
       const res = await fetch('/api/metrics');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const allMetrics: MetricEntry[] = Array.isArray(data.metrics) ? data.metrics : [];
-      const samples = allMetrics
-        .filter((m) => m.name === SLA_READY_CHECK_METRIC)
-        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setSlaState({ status: 'ready', samples });
+      setMetricsState({ status: 'ready', metrics: allMetrics });
     } catch (err) {
-      logger.error('Error loading SLA samples', { err });
-      setSlaState((prev) => ({ ...prev, status: 'error' }));
+      logger.error('Error loading metrics', { err });
+      setMetricsState((prev) => ({ ...prev, status: 'error' }));
     }
   }, []);
 
@@ -188,8 +207,8 @@ export default function RebuiltExecutiveOverview() {
     fetchCalls();
     fetchAgents();
     fetchReady();
-    fetchSla();
-  }, [fetchCalls, fetchAgents, fetchReady, fetchSla]);
+    fetchMetrics();
+  }, [fetchCalls, fetchAgents, fetchReady, fetchMetrics]);
 
   const updateChecklist = async (key: string, value: boolean) => {
     if (!checklist) return;
@@ -268,16 +287,41 @@ export default function RebuiltExecutiveOverview() {
   // SLA (disponibilidade) — real uptime approximation from platform_ready_check samples in the
   // last 24h, never a fabricated percentage. Empty (not zero) until the scheduler has produced at
   // least one sample for this tenant — see .agents/handoffs/onda-4/10-para-02-sla-telemetria-overview.md.
-  const slaWindowSamples = slaState.samples.filter(
+  const slaSamples = metricsState.metrics
+    .filter((m) => m.name === SLA_READY_CHECK_METRIC)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const slaWindowSamples = slaSamples.filter(
     (m) => Date.now() - new Date(m.timestamp).getTime() <= SLA_WINDOW_MS
   );
   const slaUptimePercent = slaWindowSamples.length > 0
     ? (slaWindowSamples.filter((m) => m.value === 1).length / slaWindowSamples.length) * 100
     : null;
-  const slaLastFailure = describeSlaFailure(slaState.samples[0]);
+  const slaLastFailure = describeSlaFailure(slaSamples[0]);
   const slaCaption = slaUptimePercent !== null
     ? `${slaWindowSamples.length} amostra${slaWindowSamples.length === 1 ? '' : 's'} (24h) · a cada 5 min${slaLastFailure ? ` · última falha: ${slaLastFailure}` : ''}`
     : 'Ainda sem amostras suficientes';
+
+  // Telemetria de IA (custo, tokens, latência) — real, tenant-wide, gravada por
+  // lib/voice-runtime/providers/LLMGateway.ts a cada chamada que efetivamente atingiu um provedor.
+  // Ver .agents/handoffs/onda-4/04-para-02-telemetria-custo-ia-disponivel.md. Nunca fabricado: sem
+  // nenhuma linha ainda, os cards mostram "—" com uma legenda honesta de "ainda sem chamadas" (o
+  // pipeline existe, só não houve chamada de IA neste tenant ainda).
+  const aiCostSamples = metricsState.metrics.filter((m) => m.name === AI_COST_METRIC);
+  const aiTokensSamples = metricsState.metrics.filter((m) => m.name === AI_TOKENS_METRIC);
+  const aiLatencySamples = metricsState.metrics.filter((m) => m.name === AI_LATENCY_METRIC);
+
+  const aiTotalCost = aiCostSamples.length > 0
+    ? aiCostSamples.reduce((sum, m) => sum + m.value, 0)
+    : null;
+  const aiTotalTokens = aiTokensSamples.length > 0
+    ? aiTokensSamples.reduce((sum, m) => sum + m.value, 0)
+    : null;
+  const aiAvgLatency = aiLatencySamples.length > 0
+    ? aiLatencySamples.reduce((sum, m) => sum + m.value, 0) / aiLatencySamples.length
+    : null;
+  // Total de chamadas de IA reportadas = nº de amostras de latência (uma por chamada bem-sucedida
+  // a um provedor real — ver contrato do handoff do Agente 04).
+  const aiCallCount = aiLatencySamples.length;
 
   return (
     <div className="space-y-8 animate-slide-up text-left">
@@ -598,8 +642,10 @@ export default function RebuiltExecutiveOverview() {
               Disponibilidade (SLA) is real too (GET /api/metrics, platform_ready_check — Agente 10,
               see handoff onda-4/10-para-02-sla-telemetria-overview.md): a periodic sample, not a
               continuous measurement, documented as such via its tooltip/caption below.
-              No token/cost/CSAT/latency card here yet — this platform has no telemetry pipeline
-              feeding those to this screen yet (see handoff 02-para-04-10-telemetria-overview.md). */}
+              AI cost/tokens/latency now real too (GET /api/metrics, ai_call_* — Agente 04, see
+              handoff onda-4/04-para-02-telemetria-custo-ia-disponivel.md), rendered further below.
+              CSAT still has no real data source (product decision pending) — kept as an explicit
+              empty card, never a fabricated number. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             <RealStatCard
               title="Agentes Cadastrados"
@@ -639,20 +685,50 @@ export default function RebuiltExecutiveOverview() {
             />
             <RealStatCard
               title="Disponibilidade (SLA)"
-              status={slaState.status}
+              status={metricsState.status}
               value={slaUptimePercent !== null ? `${slaUptimePercent.toFixed(2)}%` : '—'}
               caption={slaCaption}
               tooltip="Uptime aproximado da plataforma (Postgres + Redis), calculado a partir de checagens reais amostradas a cada 5 minutos — não é uma medição contínua: uma indisponibilidade mais curta que o intervalo entre amostras pode não aparecer aqui."
             />
           </div>
 
-          {/* Honest placeholder for metrics this platform doesn't produce yet, instead of
-              inventing tokens/cost/CSAT/latency numbers. SLA moved to its own real card above. */}
-          <Alert
-            variant="info"
-            title="Telemetria de IA ainda não instrumentada"
-            description="Tokens consumidos, custo estimado, latência de resposta e CSAT dependem do pipeline de Observability/Voice Runtime, que ainda não publica esses eventos para o dashboard. Assim que existir, estas métricas aparecem aqui com dado real — nunca um número de exemplo."
-          />
+          {/* Telemetria de IA (custo, tokens, latência) — real, agregada de GET /api/metrics
+              (eventos ai_call_cost_usd / ai_call_tokens / ai_call_latency_ms, gravados por
+              lib/voice-runtime/providers/LLMGateway.ts a cada chamada que efetivamente atingiu um
+              provedor real). Ver .agents/handoffs/onda-4/04-para-02-telemetria-custo-ia-disponivel.md.
+              CSAT e SLA de disponibilidade continuam com estado vazio/honesto — SLA já tem card
+              próprio acima; CSAT não tem fonte de dado real definida ainda (decisão de produto
+              pendente, fora do escopo desta onda). */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <RealStatCard
+              title="Custo de IA (total)"
+              status={metricsState.status}
+              value={aiTotalCost !== null ? formatUsd(aiTotalCost) : '—'}
+              caption={aiCallCount > 0 ? `${aiCallCount} chamada${aiCallCount === 1 ? '' : 's'} de IA registrada${aiCallCount === 1 ? '' : 's'}` : 'Ainda sem chamadas de IA para esta organização'}
+              tooltip="Soma do custo estimado (USD) de todas as chamadas de IA que atingiram um provedor com sucesso, reportado pelo LLM Gateway."
+            />
+            <RealStatCard
+              title="Tokens consumidos"
+              status={metricsState.status}
+              value={aiTotalTokens !== null ? formatTokens(aiTotalTokens) : '—'}
+              caption={aiCallCount > 0 ? `${aiCallCount} chamada${aiCallCount === 1 ? '' : 's'} de IA registrada${aiCallCount === 1 ? '' : 's'}` : 'Ainda sem chamadas de IA para esta organização'}
+              tooltip="Soma de tokens totais reportados pelas respostas reais dos provedores de IA (não é uma estimativa pré-chamada)."
+            />
+            <RealStatCard
+              title="Latência média de IA"
+              status={metricsState.status}
+              value={aiAvgLatency !== null ? formatMs(aiAvgLatency) : '—'}
+              caption={aiCallCount > 0 ? `Média de ${aiCallCount} chamada${aiCallCount === 1 ? '' : 's'}` : 'Ainda sem chamadas de IA para esta organização'}
+              tooltip="Latência média real do processamento completo de chamada de IA (do pedido até a resposta do provedor)."
+            />
+            <RealStatCard
+              title="CSAT"
+              status="ready"
+              value="—"
+              caption="Sem fonte de dado definida"
+              tooltip="Satisfação do cliente (CSAT) ainda não tem mecanismo de coleta definido nesta plataforma (ex.: pesquisa pós-atendimento) — decisão de produto pendente. Nenhum número é exibido enquanto essa fonte não existir."
+            />
+          </div>
 
           {/* LOWER WIDGETS GRID */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
