@@ -17,6 +17,19 @@ used when this document was first created at Agent 07's request in Onda 2 (see s
 above). `docs/patterns/**` remains Agent 09's file ownership for everything else; ping 09 to
 review/sync this page if anything here reads as inconsistent with the rest of `docs/patterns/**`.
 
+**Onda 6 update**: §2/§3 updated again by Agent 04 for two changes specified in
+`.agents/handoffs/onda-6/00-para-04-tool-midcall-voice-upload.md`: (1) a `tool` node reached
+mid-call now pauses as `mode: 'tool_pending'` instead of degrading straight to the failure
+fallback — see the `tool` subsection below and
+`.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`; (2) `voice` is no longer blocked at
+publish time — it is a Twilio-named-TTS MVP, see the new `voice` subsection below and
+`.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`. Removing `voice` from the blocked
+list broke the "any unsupported node type" example fixture in three tests owned by other agents
+(`__tests__/workflowRuntimeService.test.ts`, `__tests__/workflowPublishGate.test.ts` — Agente 08;
+`src/services/workflowVersioning.test.ts` — Agente 07, per that file's own header comment) — see
+the corresponding `04-para-07-*`/`04-para-08-*` handoffs in this same onda for the one-line fixture
+fix each needs (swap the example node from `voice` to `human_handoff`, which remains blocked).
+
 ## 1. Where the runtime reads a workflow "ready to execute"
 
 `workflowRepository.findActiveWorkflowForTenant(tenantId)` — **never**
@@ -51,13 +64,15 @@ existed loosely in Onda 2 and is now a hard publish-time gate, not a runtime cra
 
 ### What the runtime actually executes today
 
-`start`, `llm`, `prompt`, `question`, `condition`, `switch`, `memory`, `end`, `knowledge`, `tool` —
-consumed by `src/services/telephonyService.ts` for real phone calls (Twilio). The published
-version's snapshot is persisted on the phone session and stays stable for the whole call; the LLM
-calls inside it always carry the session's real `tenantId` (consent, rate limiting, cost
-accounting, and telemetry stay tenant-correct end to end). `knowledge`/`tool` were added in Onda 5
-(`.agents/handoffs/onda-5/00-para-04-motor-execucao-knowledge-tool.md`) — see their own
-subsections below for execution semantics and honest limitations.
+`start`, `llm`, `prompt`, `question`, `condition`, `switch`, `memory`, `end`, `knowledge`, `tool`,
+`voice` — consumed by `src/services/telephonyService.ts` for real phone calls (Twilio). The
+published version's snapshot is persisted on the phone session and stays stable for the whole
+call; the LLM calls inside it always carry the session's real `tenantId` (consent, rate limiting,
+cost accounting, and telemetry stay tenant-correct end to end). `knowledge`/`tool` were added in
+Onda 5 (`.agents/handoffs/onda-5/00-para-04-motor-execucao-knowledge-tool.md`); `voice` and the
+`tool` mid-call continuation were added in Onda 6
+(`.agents/handoffs/onda-6/00-para-04-tool-midcall-voice-upload.md`) — see their own subsections
+below for execution semantics and honest limitations.
 
 #### `knowledge` execution semantics
 
@@ -103,28 +118,63 @@ unsupported method, timeout, non-2xx, network error) never throws: it resolves t
 node (or a default fallback message) can branch on it — the call is never dropped because a tool
 call failed.
 
-**Known gap**: real HTTP execution only happens for a `tool` node reached during
-`initializeWorkflowRuntime`'s traversal — i.e. the deterministic segment between `start` and the
-call's first `prompt`/`question`. A `tool` node reached later, mid-conversation (via
-`prepareWorkflowTurn`, called synchronously and without `await` by `telephonyService.ts`), cannot
-perform a real network call without either breaking that synchronous call site or blocking the
-event loop for every other concurrent call — so it degrades directly to the same
-`tool_ok='false'` fallback a live failure would take, without ever calling the configured
-endpoint. See `.agents/handoffs/onda-5/04-para-05-tool-node-async-continuation.md` for the
-proposed follow-up (this is a real product limitation today, not just a doc footnote — a
-`start -> question -> tool -> prompt` workflow will not actually call the endpoint yet).
+**Onda 6 update — mid-call `tool` is executed for real via an explicit pause/resume, not the
+synchronous path**: `prepareWorkflowTurn` (still synchronous, still called without `await` by
+`telephonyService.ts`) never performs the HTTP call itself. When the deterministic walk reaches a
+`tool` node outside the call-start segment, it now stops there and returns
+`PreparedWorkflowTurn.mode === 'tool_pending'` (the same way it already stops on `prompt`/
+`question`) instead of silently degrading to the failure fallback. The caller (Agente 05,
+`telephonyService.ts`) is expected to `await workflowRuntimeService.resumeAfterTool(state, node)`
+— which performs the real HTTP call (same consent gate, same `HttpToolExecutor` SSRF/timeout/retry
+defense as call-start) and then continues walking the graph, returning the next real
+`PreparedWorkflowTurn` (`llm`/`direct`, or another `tool_pending` if a second `tool` node follows
+immediately). See `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md` for the exact
+contract Agente 05 consumes; that handoff's `Status` field is the source of truth for whether
+`telephonyService.ts` has actually been updated to call `resumeAfterTool` yet — until it has, a
+`tool` node reached mid-call correctly pauses the turn but nothing yet resumes it from the
+telephony side (a real product gap, not just a doc footnote, exactly like the Onda 5 gap it
+replaces).
+
+#### `voice` execution semantics (Onda 6 MVP: Twilio-named TTS, Option 1)
+
+`voice` is a **passive** node: reaching it never itself constitutes an interaction (no `prompt`/
+`question` behavior) — it only (re)resolves `PreparedWorkflowTurn.voiceOverride` for whatever
+interaction comes next in the same call, then continues to its single outgoing edge like any other
+deterministic node.
+
+- Only `provider` and `voiceId` are honored, and only when they are **already** a real,
+  documented Twilio-native voice identifier (Amazon Polly under `Polly.<Name>`, or Google under
+  `Google.<name>` — see Twilio's own `<Say voice="...">` reference). This is Option 1 from
+  `.agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md`, chosen by the Coordinator in
+  Onda 6 specifically because it needs no new dependency (`objectStorage.ts`, an audio cache, or
+  extra synthesis latency) to unblock the node.
+- `stability`, `clarity`, `speechRate` (ElevenLabs-specific synthesis controls, still shown in the
+  Studio inspector for this node) have **no Twilio `<Say>` equivalent and are silently ignored** —
+  this is a deliberate MVP limitation, not a validation error, and `publishWorkflow()` never
+  rejects a graph for using them.
+- The Studio's own default config for this node (`provider: 'ElevenLabs', voiceId:
+  'Rachel_pt_BR'`) has **no known Twilio mapping** and, per AGENTS.md §14 ("never fabricate"),
+  `voiceOverride` is simply omitted in that case — Twilio speaks with its own default voice
+  instead of guessing "the closest" Twilio voice to an unrelated provider's voice id. A full
+  ElevenLabs voice (Option 2 — real synthesis via `<Play>`) remains a future product decision, not
+  implemented here.
+- `voiceOverride` is consumed by Agente 05 in `telephony.controller.ts`
+  (`twiml.say({ voice, language }, texto)`) — see
+  `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md` for the exact contract; that
+  handoff's `Status` field says whether the Twilio side has picked it up yet.
 
 ### What is blocked at publish time (preview/draft only in the Studio)
 
-`voice`, `human_handoff` — these remain selectable and configurable in the Studio canvas (so
-editing isn't regressed), but `publishWorkflow()` rejects a graph that depends on them with an
-explicit error. Non-deterministic fan-out, an unknown LLM provider, an invalid validation regex,
-and a conditional branch without a resolvable handle also fail closed. Both require a change to
-`src/services/telephonyService.ts` (TwiML generation, Agente 05 exclusive) that is out of scope
-for the agent that unblocked `knowledge`/`tool` — see
-`.agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md` for a design proposal.
+`human_handoff` — it remains selectable and configurable in the Studio canvas (so editing isn't
+regressed), but `publishWorkflow()` rejects a graph that depends on it with an explicit error. Non-
+deterministic fan-out, an unknown LLM provider, an invalid validation regex, and a conditional
+branch without a resolvable handle also fail closed. `human_handoff` requires a telephony transfer
+bridge in `src/services/telephonyService.ts` (Agente 05 exclusive) that remains out of scope — see
+`.agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md` for the original design proposal
+(its Option 1 is what unblocked `voice` in Onda 6; `human_handoff` never had an equivalent
+"MVP-without-a-bridge" option).
 
-If support for one of these is added to the runtime, update this document and the "blocked at
+If support for `human_handoff` is added to the runtime, update this document and the "blocked at
 publish" list above in the same change — do not let this file drift from
 `validateRuntimeCompatibility()`'s actual behavior.
 
@@ -151,7 +201,7 @@ type StudioNode = Node<StudioNodeData, NodeType>; // @xyflow/react Node generic
 | type | config fields relevant to execution |
 |---|---|
 | `start` | `channel`, `language`, `timezone`, `provider` (e.g. Twilio), `persona`, `model` |
-| `voice`⚠ | `provider` (e.g. ElevenLabs), `voiceId`, `stability`, `clarity`, `speechRate` |
+| `voice`‡ | `provider`, `voiceId`, `language` (honored only alongside a recognized `voiceId`), `stability`†, `clarity`†, `speechRate`† |
 | `llm` | `provider`, `model`, `temperature`, `topP`, `maxTokens`, `safetySettings` |
 | `prompt` | `promptText` (required, non-empty), `streaming`, `thinking`, `fallbackText` |
 | `question` | `questionText` (required), `maxRetryCount`, `speechTimeoutMs`, `validationRegex`, `variableToSave`, `fallbackPrompt` |
@@ -164,12 +214,16 @@ type StudioNode = Node<StudioNodeData, NodeType>; // @xyflow/react Node generic
 | `end` | `saveTranscript`, `exportToWebhook`, `postCallSurvey` |
 
 ⚠ = blocked at publish time today (§2). † = accepted by the Studio config schema but **not
-honored** by the runtime's `knowledge` execution — see §2's "`knowledge` execution semantics" for
-why (keyword-confidence lookup, not real chunked/ranked retrieval). Fields marked "required" are
-exactly what `ValidationEngine.ts` rejects as a structural error when missing/empty — a published
-(`active`) workflow is guaranteed to have these keys present and non-empty; the runtime does not
-need to re-validate presence for structural safety, only handle real execution failures (endpoint
-down, provider unavailable, tool timeout) normally.
+honored** by the runtime's execution for that node type — see §2's "`knowledge` execution
+semantics" (keyword-confidence lookup, not real chunked/ranked retrieval) and "`voice` execution
+semantics" (ElevenLabs-specific synthesis controls have no Twilio `<Say>` equivalent) for why. ‡ =
+executable since Onda 6, but only a `voiceId` that is already a real, documented Twilio-native
+voice name resolves to a non-empty `voiceOverride` — see §2's "`voice` execution semantics" for the
+never-fabricate rule this follows. Fields marked "required" are exactly what `ValidationEngine.ts`
+rejects as a structural error when missing/empty — a published (`active`) workflow is guaranteed to
+have these keys present and non-empty; the runtime does not need to re-validate presence for
+structural safety, only handle real execution failures (endpoint down, provider unavailable, tool
+timeout) normally.
 
 ## 4. `StudioEdge` shape and conditional routing
 
@@ -212,19 +266,36 @@ interface StudioEdgeData {
 These live in `__tests__/**`, owned by Agent 08 — this document only describes what they already
 assert; it does not duplicate their assertions as a second source of truth that could drift.
 
-`knowledge`/`tool` (added Onda 5) are additionally covered outside `__tests__/**` (Agent 04's own
-files, following the same co-located-test precedent already used elsewhere in the repo — e.g.
-`src/features/prospecting/routes/atlasgr.routes.test.ts`):
+`knowledge`/`tool` (added Onda 5) and `tool_pending`/`voice` (added Onda 6) are additionally
+covered outside `__tests__/**` (Agent 04's own files, following the same co-located-test precedent
+already used elsewhere in the repo — e.g. `src/features/prospecting/routes/atlasgr.routes.test.ts`):
 
 - `lib/voice-runtime/HttpToolExecutor.test.ts` — SSRF defense (blocked private/reserved hosts),
   unsupported-method rejection, timeout, retry-then-succeed, retry exhaustion, non-2xx handling,
   and that a hostile timeout/retryLimit configuration is clamped rather than trusted.
 - `src/services/workflowRuntimeService.knowledgeTool.test.ts` — `validateRuntimeCompatibility` no
-  longer blocking `knowledge`/`tool` (while still blocking `voice`/`human_handoff`); a confident
+  longer blocking `knowledge`/`tool`/`voice` (while still blocking `human_handoff`); a confident
   `knowledge` match reaching the next LLM's `systemInstruction`; a low-confidence/no-match query
   never fabricating a result; cross-tenant isolation (an `agentId` not owned by the calling
   `tenantId` yields zero documents, never another tenant's); a `tool` node executing for real (and
   exposing `tool_ok`/`tool_result`) when reached during `initializeWorkflowRuntime`; a blocked URL
-  degrading to the `tool_error` fallback without ever crashing call setup; and a `tool` node
-  reached mid-call (via the synchronous `prepareWorkflowTurn`) degrading to the same fallback
-  without performing a real network call.
+  degrading to the `tool_error` fallback without ever crashing call setup; a `tool` node reached
+  mid-call (via the synchronous `prepareWorkflowTurn`) pausing as `tool_pending` (Onda 6) instead of
+  faking a fallback; `resumeAfterTool` performing the real HTTP call for that paused node and
+  continuing the graph (including a `start -> question -> tool -> prompt` workflow that actually
+  calls the endpoint with a variable collected earlier in the same call); `resumeAfterTool` gated
+  on the same consent check as call-start; a `voice` node resolving `voiceOverride` only for an
+  already-valid Twilio/Polly voice name, never fabricating one for the Studio's ElevenLabs default;
+  and `voice` behaving as a passive node that never blocks its own outgoing edge.
+- `src/controllers/knowledge.controller.test.ts` — the Onda 6 text-only knowledge upload endpoint:
+  an infected upload (EICAR) rejected with 422 and never indexed; the antivirus scanner itself
+  being unavailable rejected with 503 (fail closed) and never indexed; a clean, valid `.md` upload
+  indexed with its decoded content; a binary disguised as `.txt` (invalid UTF-8) rejected with 422
+  and never fabricated as extracted text; the virus scan running before the text-validity check,
+  not merely in addition to it; and the usual 404/400 guards (unknown/foreign agent, missing
+  fields).
+
+Three fixtures owned by other agents used `voice` purely as an example of "any node type the
+runtime does not yet support" and now need a one-line update (swap the node type to
+`human_handoff`, which remains blocked) — see `.agents/handoffs/onda-6/04-para-07-*.md` and
+`04-para-08-*.md` for exactly which assertions and the suggested fix.

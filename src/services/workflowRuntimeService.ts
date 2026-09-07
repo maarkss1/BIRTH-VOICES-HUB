@@ -22,7 +22,8 @@ export type RuntimeNodeType =
   | 'memory'
   | 'end'
   | 'knowledge'
-  | 'tool';
+  | 'tool'
+  | 'voice';
 
 type RuntimeConfig = Record<string, Prisma.JsonValue>;
 
@@ -31,6 +32,12 @@ interface RuntimeNode extends Record<string, Prisma.JsonValue> {
   type: RuntimeNodeType;
   config: RuntimeConfig;
 }
+
+// Public alias for `RuntimeNode`, exported so a caller resuming an interrupted turn (Agente 05,
+// see `resumeAfterTool` below and `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`)
+// has a named type to reference without importing the internal `RuntimeNode` name. Structurally
+// identical — `state.nodes` (already public on `WorkflowRuntimeState`) is exactly `WorkflowNode[]`.
+export type WorkflowNode = RuntimeNode;
 
 interface RuntimeEdge extends Record<string, Prisma.JsonValue> {
   id: string;
@@ -79,6 +86,10 @@ export interface WorkflowRuntimeState extends Record<string, Prisma.JsonValue> {
 const RUNTIME_TENANT_ID_VAR = '__runtimeTenantId';
 const RUNTIME_AGENT_ID_VAR = '__runtimeAgentId';
 const RUNTIME_KNOWLEDGE_DOCS_VAR = '__runtimeKnowledgeDocumentsJson';
+// Holds the last successfully resolved `voice` node override as it is carried forward across
+// turns inside the same JSON-safe `variables` map (see the `WorkflowRuntimeState` doc comment
+// above) — same reserved-key pattern as tenant/agent id and knowledge documents.
+const RUNTIME_VOICE_OVERRIDE_VAR = '__runtimeVoiceOverrideJson';
 
 function getRuntimeTenantId(state: WorkflowRuntimeState): string {
   return state.variables[RUNTIME_TENANT_ID_VAR] ?? '';
@@ -102,14 +113,50 @@ function getRuntimeKnowledgeDocuments(state: WorkflowRuntimeState): KnowledgeDoc
   }
 }
 
+function getRuntimeVoiceOverride(state: WorkflowRuntimeState): VoiceOverride | undefined {
+  const raw = state.variables[RUNTIME_VOICE_OVERRIDE_VAR];
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      && typeof (parsed as Record<string, unknown>).voice === 'string'
+      && (parsed as Record<string, unknown>).voice
+    ) {
+      const language = (parsed as Record<string, unknown>).language;
+      return {
+        voice: (parsed as { voice: string }).voice,
+        ...(typeof language === 'string' && language ? { language } : {}),
+      };
+    }
+    return undefined;
+  } catch {
+    // Same fail-safe posture as `getRuntimeKnowledgeDocuments`: a corrupted snapshot degrades to
+    // "no override" (Twilio's default voice), never a thrown error mid-call.
+    return undefined;
+  }
+}
+
+/**
+ * Twilio's own named TTS voice, resolved from the nearest `voice` node the call has passed
+ * through (Onda 6 MVP — see the `resolveVoiceOverride` doc comment below for exactly what is and
+ * is not honored). Absent whenever no `voice` node has been reached yet, or the configured
+ * `provider`/`voiceId` has no known Twilio-native mapping.
+ */
+export interface VoiceOverride {
+  voice: string;
+  language?: string;
+}
+
 export interface PreparedWorkflowTurn {
   state: WorkflowRuntimeState;
-  mode: 'llm' | 'direct';
+  mode: 'llm' | 'direct' | 'tool_pending';
   systemInstruction?: string;
   preferredProvider?: RuntimeProvider;
   directReply?: string;
   nextQuestion?: string;
   shouldEnd: boolean;
+  voiceOverride?: VoiceOverride;
 }
 
 const SUPPORTED_TYPES = new Set<RuntimeNodeType>([
@@ -123,17 +170,20 @@ const SUPPORTED_TYPES = new Set<RuntimeNodeType>([
   'end',
   'knowledge',
   'tool',
+  'voice',
 ]);
 
 // 'knowledge' and 'tool' were unsupported through Onda 4 (see git history for the removed
 // UNSUPPORTED_REASON entries) — as of Onda 5 they are executed for real
-// (`applyKnowledgeNode`/`executeToolNodeAsync` below); see
-// docs/patterns/workflow-execution-contract.md §2 for the up-to-date executable list. 'voice' and
-// 'human_handoff' remain blocked: both require a change to `telephonyService.ts` (Agente 05,
-// exclusive owner) that is out of this round's scope — see
+// (`applyKnowledgeNode`/`executeToolNodeAsync` below). 'voice' became executable in Onda 6 as a
+// Twilio-named-TTS MVP (see `resolveVoiceOverride` below and
+// `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`) — it is a passive node that only
+// sets `PreparedWorkflowTurn.voiceOverride` and continues to the next node, never an interaction
+// by itself. See docs/patterns/workflow-execution-contract.md §2/§3 for the up-to-date executable
+// list. 'human_handoff' remains blocked: it requires a telephony transfer bridge in
+// `telephonyService.ts` (Agente 05, exclusive owner) that is out of scope here — see
 // .agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md.
 const UNSUPPORTED_REASON: Partial<Record<string, string>> = {
-  voice: 'A telefonia de produção usa Twilio <Say>/<Gather>; o seletor de voz do Studio ainda não controla esse caminho.',
   human_handoff: 'A transferência humana ainda não possui bridge de telefonia validada para produção.',
 };
 
@@ -181,6 +231,58 @@ function branchHandles(edges: StudioEdge[], nodeId: string): Set<string> {
       .map((edge) => edge.sourceHandle)
       .filter((handle): handle is string => typeof handle === 'string' && handle.length > 0),
   );
+}
+
+// Twilio's <Say> verb synthesizes speech only from Twilio's own voice catalog — Amazon Polly
+// voices under a `Polly.<Name>` identifier, or Google voices under `Google.<name>`
+// (https://www.twilio.com/docs/voice/twiml/say#voice). It has no concept of an ElevenLabs voice
+// id at all, so a Studio `voice` node's default config (`provider: 'ElevenLabs', voiceId:
+// 'Rachel_pt_BR'`) has no honest translation into a Twilio voice name — Option 2 (real
+// ElevenLabs synthesis via <Play>) would be needed for that, and is explicitly out of scope for
+// this MVP (see .agents/handoffs/onda-6/00-para-04-tool-midcall-voice-upload.md). This table only
+// recognizes voice identifiers that ARE ALREADY real, documented Twilio voice names — it never
+// guesses "the closest Twilio voice" for an unrelated provider's voice id (AGENTS.md §14: never
+// fabricate). Keys are matched case-insensitively, both with and without the `Polly.`/`Google.`
+// prefix, against whatever a tenant typed into the Studio inspector's `voiceId` field.
+const KNOWN_TWILIO_VOICE_NAMES: Record<string, string> = {
+  'polly.camila': 'Polly.Camila',
+  'camila': 'Polly.Camila',
+  'polly.camila-neural': 'Polly.Camila-Neural',
+  'camila-neural': 'Polly.Camila-Neural',
+  'polly.vitoria': 'Polly.Vitoria',
+  'vitoria': 'Polly.Vitoria',
+  'polly.vitória': 'Polly.Vitoria',
+  'vitória': 'Polly.Vitoria',
+  'polly.ricardo': 'Polly.Ricardo',
+  'ricardo': 'Polly.Ricardo',
+  'google.pt-br-standard-a': 'Google.pt-BR-Standard-A',
+  'pt-br-standard-a': 'Google.pt-BR-Standard-A',
+};
+
+// Only a `provider` naming Twilio's own TTS engines is even eligible for the lookup above — this
+// is a second, independent guard (not a substitute for the allowlist itself) against an
+// accidental short-name collision with an unrelated provider's voice id.
+const TWILIO_NATIVE_VOICE_PROVIDERS = new Set(['twilio', 'amazonpolly', 'amazon', 'polly', 'google', 'googletts', 'googlecloudtts']);
+
+/**
+ * Resolves a Studio `voice` node's `provider`/`voiceId` into the Twilio-native voice name
+ * `PreparedWorkflowTurn.voiceOverride` carries. Only `voiceId` (an already-valid Twilio/Polly/
+ * Google voice identifier) and, if present, `language` are honored — `stability`/`clarity`/
+ * `speechRate` (ElevenLabs-specific synthesis controls) have no Twilio <Say> equivalent and are
+ * silently ignored, never rejected as a validation error (see
+ * docs/patterns/workflow-execution-contract.md §3). Returns `undefined` whenever there is no known
+ * mapping — the caller must never fall back to guessing a voice name.
+ */
+function resolveVoiceOverride(config: RuntimeConfig): VoiceOverride | undefined {
+  const provider = asString(config.provider).toLowerCase().replace(/[\s_-]+/g, '');
+  const voiceId = asString(config.voiceId);
+  if (!voiceId || !TWILIO_NATIVE_VOICE_PROVIDERS.has(provider)) return undefined;
+
+  const mapped = KNOWN_TWILIO_VOICE_NAMES[voiceId.toLowerCase()];
+  if (!mapped) return undefined;
+
+  const language = asString(config.language);
+  return { voice: mapped, ...(language ? { language } : {}) };
 }
 
 export function mapRuntimeProvider(value: unknown): RuntimeProvider | null {
@@ -499,18 +601,19 @@ function toToolHeaders(value: unknown, variables: Record<string, string>): Recor
 }
 
 /**
- * Mid-conversation `tool` fallback. `prepareWorkflowTurn` is a synchronous function on purpose —
- * `telephonyService.ts` (Agente 05, out of scope here) calls it without `await`, and
- * `__tests__/workflowRuntimeService.test.ts` (Agente 08, out of scope here) asserts its return
- * value synchronously — so a `tool` node reached from that path cannot perform a real network
- * call without either breaking that call site or blocking the event loop for every other
- * concurrent call (unacceptable on a "high volume" voice platform). Real HTTP execution is only
- * available at call start today, via `advanceUntilInteractionAsync`/`initializeWorkflowRuntime`
- * (see the module comment above `advanceUntilInteractionAsync`). Reached later, `tool` behaves
- * exactly like a live tool failure: it degrades to the same `tool_ok`/`tool_error` fallback path
- * a real timeout or blocked URL would take, never a fabricated success and never an unhandled
- * exception up into `telephonyService.ts`. See
- * .agents/handoffs/onda-5/04-para-05-tool-node-async-continuation.md for the proposed follow-up.
+ * `tool` failure fallback — applied whenever a real HTTP attempt (`executeToolNodeAsync`) did not
+ * end in `result.ok`, regardless of which entry point drove it (call-start's
+ * `advanceUntilInteractionAsync`, or a mid-call `resumeAfterTool`). Never a fabricated success,
+ * never an unhandled exception up into `telephonyService.ts`.
+ *
+ * Onda 6 history: through Onda 5, a `tool` node reached mid-conversation (via the synchronous
+ * `prepareWorkflowTurn`) could not perform a real network call at all — the synchronous path had
+ * no way to `await` one — so it degraded straight to this fallback without ever calling the
+ * configured endpoint. As of Onda 6, `advanceUntilInteraction` (sync) instead stops the graph at a
+ * `tool` node (`mode: 'tool_pending'`, see `PreparedWorkflowTurn`) and the real call happens in
+ * `resumeAfterTool` below — this function is now reached only on a genuine failure (timeout,
+ * blocked URL, non-2xx, consent not granted), never merely because the call was reached
+ * mid-conversation. See `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`.
  */
 function applyToolFallback(state: WorkflowRuntimeState, node: RuntimeNode, reason: string): void {
   state.variables.tool_ok = 'false';
@@ -522,10 +625,11 @@ function applyToolFallback(state: WorkflowRuntimeState, node: RuntimeNode, reaso
 }
 
 /**
- * Real execution path for a `tool` node — only reachable today from `advanceUntilInteractionAsync`
- * (i.e. before the call's first `prompt`/`question`). SSRF/timeout/retry defense lives in
- * `executeHttpTool` (`lib/voice-runtime/HttpToolExecutor.ts`), reusing
- * `isPrivateOrReservedHost` from `src/validators/index.ts` — never re-implemented here.
+ * Real execution path for a `tool` node — called from `advanceUntilInteractionAsync` (before the
+ * call's first `prompt`/`question`) and, as of Onda 6, from `resumeAfterTool` (a `tool` node
+ * reached later, mid-conversation). SSRF/timeout/retry defense lives in `executeHttpTool`
+ * (`lib/voice-runtime/HttpToolExecutor.ts`), reusing `isPrivateOrReservedHost` from
+ * `src/validators/index.ts` — never re-implemented here.
  *
  * Gated on the same tenant-level external-data-egress consent already required for AI providers
  * (`getAiConsent`, AGENTS.md §16) before the call fires: a `tool` node sends caller/lead fields
@@ -655,9 +759,33 @@ function advanceDeterministicNode(state: WorkflowRuntimeState, node: RuntimeNode
     return selectDefaultEdge(state, node.id)?.target ?? null;
   }
 
+  if (node.type === 'voice') {
+    // Passive node: it never interacts with the caller by itself, only (re)sets the active
+    // Twilio voice override for whatever interaction comes next — see `resolveVoiceOverride`.
+    // Reaching a `voice` node with no known mapping clears any earlier override rather than
+    // leaving a stale one from a previous `voice` node in the same call.
+    const override = resolveVoiceOverride(node.config);
+    if (override) {
+      state.variables[RUNTIME_VOICE_OVERRIDE_VAR] = JSON.stringify(override);
+    } else {
+      delete state.variables[RUNTIME_VOICE_OVERRIDE_VAR];
+    }
+    return selectDefaultEdge(state, node.id)?.target ?? null;
+  }
+
   return selectDefaultEdge(state, node.id)?.target ?? null;
 }
 
+/**
+ * Synchronous graph walk used by every `prepareWorkflowTurn` call (a live phone turn,
+ * `telephonyService.ts` calling it without `await`). As of Onda 6, a `tool` node is a stopping
+ * point exactly like `prompt`/`question`/`end`: it cannot perform a real network call from inside
+ * this synchronous function (that would either break the non-`await`ed call site or block the
+ * event loop for every other concurrent call), so it leaves `currentNodeId` pointed at the `tool`
+ * node itself and returns — `prepareWorkflowTurn` turns that into `mode: 'tool_pending'` and the
+ * caller must resume with `resumeAfterTool` (below), which performs the real HTTP call and then
+ * continues the walk from there. See `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`.
+ */
 function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string | null): WorkflowRuntimeState {
   let currentId = fromNodeId;
   const visited = new Set<string>();
@@ -679,7 +807,7 @@ function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string
       return state;
     }
 
-    if (node.type === 'prompt' || node.type === 'question') {
+    if (node.type === 'prompt' || node.type === 'question' || node.type === 'tool') {
       state.currentNodeId = node.id;
       return state;
     }
@@ -688,12 +816,6 @@ function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string
       state.ended = true;
       state.currentNodeId = node.id;
       return state;
-    }
-
-    if (node.type === 'tool') {
-      applyToolFallback(state, node, 'tool_unavailable_mid_call');
-      currentId = selectDefaultEdge(state, node.id)?.target ?? null;
-      continue;
     }
 
     currentId = advanceDeterministicNode(state, node);
@@ -706,11 +828,11 @@ function advanceUntilInteraction(state: WorkflowRuntimeState, fromNodeId: string
 
 /**
  * Async twin of `advanceUntilInteraction`, used only by `initializeWorkflowRuntime` (i.e. the
- * segment of the graph between `start` and the call's first `prompt`/`question`). This is the
- * only place a `tool` node performs a real HTTP call today — see `applyToolFallback`'s doc
- * comment for exactly why the synchronous per-turn path cannot do the same without either
- * breaking `telephonyService.ts`'s existing (non-`await`ed) call to `prepareWorkflowTurn` or
- * blocking the event loop for every other concurrent call.
+ * segment of the graph between `start` and the call's first `prompt`/`question`). A `tool` node
+ * reached here performs a real HTTP call inline (`executeToolNodeAsync`) because this function is
+ * already `await`ed by its only caller; a `tool` node reached later, mid-conversation, instead
+ * goes through `advanceUntilInteraction` (sync) + `resumeAfterTool` — see that pair's doc
+ * comments for why the two entry points cannot share one code path.
  */
 async function advanceUntilInteractionAsync(state: WorkflowRuntimeState, fromNodeId: string | null): Promise<WorkflowRuntimeState> {
   let currentId = fromNodeId;
@@ -839,7 +961,24 @@ export function getWorkflowOpeningQuestion(state: WorkflowRuntimeState | null): 
   return questionText(state) ?? null;
 }
 
+// Single attachment point for `voiceOverride` on every `PreparedWorkflowTurn` this module
+// returns (`prepareWorkflowTurn` and `resumeAfterTool`), so no individual `return` inside either
+// function has to remember to carry it — see `resolveVoiceOverride`/`getRuntimeVoiceOverride`
+// above for what is and is not resolvable.
+function attachVoiceOverride(turn: PreparedWorkflowTurn): PreparedWorkflowTurn {
+  const voiceOverride = getRuntimeVoiceOverride(turn.state);
+  return voiceOverride ? { ...turn, voiceOverride } : turn;
+}
+
+function isToolPending(state: WorkflowRuntimeState): boolean {
+  return nodeById(state, state.currentNodeId)?.type === 'tool';
+}
+
 export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: string): PreparedWorkflowTurn {
+  return attachVoiceOverride(prepareWorkflowTurnInternal(state, userText));
+}
+
+function prepareWorkflowTurnInternal(state: WorkflowRuntimeState, userText: string): PreparedWorkflowTurn {
   const next = cloneState(state);
   next.variables.lastUserText = userText;
 
@@ -851,6 +990,14 @@ export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: strin
   if (!current) {
     next.ended = true;
     return { state: next, mode: 'direct', directReply: closingMessage(next), shouldEnd: true };
+  }
+
+  // Defensive only: a correct caller never calls `prepareWorkflowTurn` again while the previous
+  // turn's `mode` was `'tool_pending'` — it calls `resumeAfterTool` instead (see
+  // `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`). If it does anyway, re-signal
+  // `tool_pending` rather than silently treating the tool node as a generic dead end.
+  if (current.type === 'tool') {
+    return { state: next, mode: 'tool_pending', shouldEnd: false };
   }
 
   if (current.type === 'question') {
@@ -879,6 +1026,9 @@ export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: strin
 
       delete next.retries[current.id];
       advancePastCurrent(next, current, 'out-1');
+      if (isToolPending(next)) {
+        return { state: next, mode: 'tool_pending', shouldEnd: false };
+      }
       const nextQuestion = questionText(next);
       return {
         state: next,
@@ -893,10 +1043,17 @@ export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: strin
     delete next.retries[current.id];
     advancePastCurrent(next, current, 'out-0');
 
+    if (isToolPending(next)) {
+      return { state: next, mode: 'tool_pending', shouldEnd: false };
+    }
+
     const afterQuestion = nodeById(next, next.currentNodeId);
     if (afterQuestion?.type === 'prompt') {
       const instruction = renderTemplate(asString(afterQuestion.config.promptText), next.variables);
       advancePastCurrent(next, afterQuestion);
+      if (isToolPending(next)) {
+        return { state: next, mode: 'tool_pending', shouldEnd: false };
+      }
       return {
         state: next,
         mode: 'llm',
@@ -919,6 +1076,9 @@ export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: strin
   if (current.type === 'prompt') {
     const instruction = renderTemplate(asString(current.config.promptText), next.variables);
     advancePastCurrent(next, current);
+    if (isToolPending(next)) {
+      return { state: next, mode: 'tool_pending', shouldEnd: false };
+    }
     return {
       state: next,
       mode: 'llm',
@@ -931,4 +1091,70 @@ export function prepareWorkflowTurn(state: WorkflowRuntimeState, userText: strin
 
   next.ended = true;
   return { state: next, mode: 'direct', directReply: closingMessage(next), shouldEnd: true };
+}
+
+/**
+ * Resumes a call that `prepareWorkflowTurn` paused with `mode: 'tool_pending'` — the async
+ * continuation promised in `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`. `node`
+ * must be the pending `tool` node (`state.nodes.find((n) => n.id === state.currentNodeId)`, or
+ * whatever reference the caller already holds from the turn that returned `tool_pending`); if it
+ * does not match a `tool` node actually at `state.currentNodeId`, this degrades to ending the call
+ * rather than guessing at a graph position, exactly like `prepareWorkflowTurn` does for any other
+ * unresolvable/corrupted state.
+ *
+ * Performs the real HTTP call (`executeToolNodeAsync`, reusing the same consent gate and
+ * `HttpToolExecutor` SSRF/timeout/retry defense already used at call start), then continues
+ * walking the graph exactly like `prepareWorkflowTurn` would — including returning another
+ * `tool_pending` if a second `tool` node follows immediately, or `tool_ok='false'`/`tool_error`
+ * on the same fallback path a live call-start failure already takes (`applyToolFallback`) — never
+ * a fabricated success and never an unhandled exception back into `telephonyService.ts`.
+ */
+export async function resumeAfterTool(state: WorkflowRuntimeState, node: WorkflowNode): Promise<PreparedWorkflowTurn> {
+  const next = cloneState(state);
+  const toolNode = nodeById(next, node.id);
+
+  if (!toolNode || toolNode.type !== 'tool') {
+    logger.error('resumeAfterTool called without a matching pending tool node', {
+      workflowId: next.workflowId,
+      nodeId: node.id,
+    });
+    next.ended = true;
+    return attachVoiceOverride({ state: next, mode: 'direct', directReply: closingMessage(next), shouldEnd: true });
+  }
+
+  await executeToolNodeAsync(next, toolNode);
+  advancePastCurrent(next, toolNode);
+
+  if (isToolPending(next)) {
+    return attachVoiceOverride({ state: next, mode: 'tool_pending', shouldEnd: false });
+  }
+
+  const current = nodeById(next, next.currentNodeId);
+
+  if (current?.type === 'prompt') {
+    const instruction = renderTemplate(asString(current.config.promptText), next.variables);
+    advancePastCurrent(next, current);
+    if (isToolPending(next)) {
+      return attachVoiceOverride({ state: next, mode: 'tool_pending', shouldEnd: false });
+    }
+    return attachVoiceOverride({
+      state: next,
+      mode: 'llm',
+      systemInstruction: instruction,
+      preferredProvider: next.preferredProvider,
+      nextQuestion: questionText(next),
+      shouldEnd: next.ended,
+    });
+  }
+
+  if (current?.type === 'question') {
+    return attachVoiceOverride({
+      state: next,
+      mode: 'direct',
+      directReply: questionText(next) ?? (next.ended ? closingMessage(next) : 'Obrigado. Pode continuar.'),
+      shouldEnd: next.ended,
+    });
+  }
+
+  return attachVoiceOverride({ state: next, mode: 'direct', directReply: closingMessage(next), shouldEnd: true });
 }

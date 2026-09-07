@@ -22,6 +22,7 @@ import { getAiConsent } from './settingService.js';
 import {
   initializeWorkflowRuntime,
   prepareWorkflowTurn,
+  resumeAfterTool,
   validateRuntimeCompatibility,
 } from './workflowRuntimeService.js';
 import type { StudioEdge, StudioNode, NodeType } from '../../lib/studio/types.js';
@@ -121,23 +122,20 @@ describe('validateRuntimeCompatibility: knowledge/tool are no longer blocked', (
     expect(issues).toEqual([]);
   });
 
-  it('still fails closed for voice and human_handoff', () => {
+  it('still fails closed for human_handoff (voice became executable in Onda 6 — see the dedicated describe block below)', () => {
     const nodes = [
       node('start-1', 'start'),
-      node('voice-1', 'voice', { provider: 'ElevenLabs' }),
       node('handoff-1', 'human_handoff', { department: 'vendas' }),
       node('end-1', 'end'),
     ];
     const edges = [
-      edge('e1', 'start-1', 'voice-1'),
-      edge('e2', 'voice-1', 'handoff-1'),
-      edge('e3', 'handoff-1', 'end-1'),
+      edge('e1', 'start-1', 'handoff-1'),
+      edge('e2', 'handoff-1', 'end-1'),
     ];
 
     const issues = validateRuntimeCompatibility(nodes, edges);
 
     expect(issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-voice-1', type: 'error' }),
       expect.objectContaining({ id: 'err-runtime-unsupported-handoff-1', type: 'error' }),
     ]));
   });
@@ -364,7 +362,7 @@ describe('tool node execution', () => {
     expect(state?.variables.tool_error).toBe('consent_check_unavailable');
   });
 
-  it('mid-call (prepareWorkflowTurn, synchronous) a tool node degrades to the fallback path instead of blocking or crashing', () => {
+  it('mid-call (prepareWorkflowTurn, synchronous) a tool node pauses as tool_pending instead of blocking, crashing, or faking a fallback (Onda 6)', () => {
     const nodes = [
       node('start-1', 'start'),
       node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
@@ -407,11 +405,151 @@ describe('tool node execution', () => {
     const prepared = prepareWorkflowTurn(syntheticState as Parameters<typeof prepareWorkflowTurn>[0], '12345678900');
 
     // Never performs a real network call synchronously — that would require blocking the event
-    // loop, which this runtime refuses to do (see workflowRuntimeService.ts's applyToolFallback).
+    // loop, which this runtime refuses to do. As of Onda 6, it also never fakes a tool failure:
+    // it pauses the graph at the `tool` node and reports `tool_pending` so the caller can resume
+    // asynchronously via `resumeAfterTool`.
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(prepared.state.variables.tool_ok).toBe('false');
-    expect(prepared.state.variables.tool_error).toBe('tool_unavailable_mid_call');
-    expect(prepared.state.currentNodeId).toBe('end-ok');
-    expect(prepared.shouldEnd).toBe(true);
+    expect(prepared.mode).toBe('tool_pending');
+    expect(prepared.shouldEnd).toBe(false);
+    expect(prepared.state.currentNodeId).toBe('tool-1');
+    expect(prepared.state.variables.tool_ok).toBeUndefined();
+  });
+
+  it('resumeAfterTool executes the real HTTP call for a tool node reached mid-call and continues the graph (start -> question -> tool -> prompt)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"cpf_status":"valido"}', { status: 200 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup?cpf={{cpf}}' }),
+      node('prompt-1', 'prompt', { promptText: 'Resultado da consulta: {{tool_result}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'tool-1', 'prompt-1'),
+      edge('e5', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    expect(state?.currentNodeId).toBe('question-1');
+
+    const afterQuestion = prepareWorkflowTurn(state!, '12345678900');
+    expect(afterQuestion.mode).toBe('tool_pending');
+    expect(afterQuestion.state.currentNodeId).toBe('tool-1');
+    // The variable collected at the previous `question` node is already in the paused state,
+    // ready for the tool's endpoint template to interpolate once resumed.
+    expect(afterQuestion.state.variables.cpf).toBe('12345678900');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const pendingNode = afterQuestion.state.nodes.find((n) => n.id === afterQuestion.state.currentNodeId)!;
+    const resumed = await resumeAfterTool(afterQuestion.state, pendingNode);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.example.com/cpf-lookup?cpf=12345678900');
+    expect(resumed.state.variables.tool_ok).toBe('true');
+    expect(resumed.state.variables.tool_result).toBe('{"cpf_status":"valido"}');
+    expect(resumed.mode).toBe('llm');
+    expect(resumed.systemInstruction).toBe('Resultado da consulta: {"cpf_status":"valido"}');
+    expect(resumed.shouldEnd).toBe(true);
+    expect(resumed.state.currentNodeId).toBe('end-1');
+  });
+
+  it('resumeAfterTool degrades to the tool_error fallback (never crashes) when the real call fails, and consent gates it exactly like call-start', async () => {
+    mockGetAiConsent.mockResolvedValue({ granted: false, grantedAt: null, revokedAt: null, grantedByUserId: null });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup' }),
+      node('condition-1', 'condition', { variable: 'tool_ok', operator: 'equals', value: 'true' }),
+      node('end-ok', 'end'),
+      node('end-fail', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-fail', 'out-1', true),
+      edge('e4', 'tool-1', 'condition-1'),
+      edge('e5', 'condition-1', 'end-ok', 'out-0'),
+      edge('e6', 'condition-1', 'end-fail', 'out-1', true),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const afterQuestion = prepareWorkflowTurn(state!, '12345678900');
+    const pendingNode = afterQuestion.state.nodes.find((n) => n.id === afterQuestion.state.currentNodeId)!;
+
+    const resumed = await resumeAfterTool(afterQuestion.state, pendingNode);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(resumed.state.variables.tool_ok).toBe('false');
+    expect(resumed.state.variables.tool_error).toBe('consent_not_granted');
+    expect(resumed.state.currentNodeId).toBe('end-fail');
+    expect(resumed.mode).toBe('direct');
+    expect(resumed.shouldEnd).toBe(true);
+  });
+});
+
+describe('voice node execution (Onda 6 MVP: Twilio-native named TTS)', () => {
+  it('resolves a voiceOverride when the node is configured with an already-valid Twilio/Polly voice name', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('voice-1', 'voice', { provider: 'Twilio', voiceId: 'Polly.Camila', language: 'pt-BR' }),
+      node('prompt-1', 'prompt', { promptText: 'Olá!' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'voice-1'),
+      edge('e2', 'voice-1', 'prompt-1'),
+      edge('e3', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'oi');
+
+    expect(prepared.voiceOverride).toEqual({ voice: 'Polly.Camila', language: 'pt-BR' });
+  });
+
+  it('never fabricates a Twilio voice name for the Studio default (ElevenLabs) — omits voiceOverride instead', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'Rachel_pt_BR' }),
+      node('prompt-1', 'prompt', { promptText: 'Olá!' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'voice-1'),
+      edge('e2', 'voice-1', 'prompt-1'),
+      edge('e3', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'oi');
+
+    expect(prepared.voiceOverride).toBeUndefined();
+  });
+
+  it('is a passive node: it never blocks on its own outgoing edge and does not itself interact with the caller', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('voice-1', 'voice', { provider: 'Twilio', voiceId: 'Ricardo' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'voice-1'), edge('e2', 'voice-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(state?.currentNodeId).toBe('end-1');
+    expect(state?.ended).toBe(true);
   });
 });
