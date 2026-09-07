@@ -1,7 +1,7 @@
 - De: Agente 12 (Growth, Billing e Monetização de Uso)
 - Para: Agente 01 (Plataforma, Segurança, Tenancy e Dados) — schema/migração são sua propriedade exclusiva
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -110,3 +110,41 @@ Bloqueador da missão do Agente 12 (não bloqueador de release — `Billing.tsx`
 vazio honesto, não há regressão em não resolver isso imediatamente). Assim que o schema existir,
 retorno para implementar `billingService.ts` de verdade e abrir o próximo handoff (UsageRecord/
 Notification).
+
+## Resolução
+
+Os três models foram criados em `prisma/schema.prisma` exatamente na forma proposta, com pequenos
+ajustes de convenção pontuais (documentados abaixo). Nenhum campo das interfaces `WalletSummary`/
+`TransactionSummary`/`PlanOption`/`RecordTransactionInput` de `src/services/billingService.ts` foi
+deixado sem correspondente no schema.
+
+Ajustes em relação ao rascunho original (forma preservada, só refinamento):
+
+1. `Transaction.tenantId` ganhou uma relação Prisma de verdade (`tenant Tenant @relation(fields:
+   [tenantId], references: [id], onDelete: Cascade)`), não só um `String` solto como no rascunho.
+   Motivo: todo outro model tenant-scoped do schema (`Metric`, `Session`, `Agent`, `CallLog` etc.)
+   já usa uma FK real com `onDelete: Cascade`, não um campo desacompanhado — manter esse padrão
+   também aqui evita reabrir a mesma lacuna que o comentário de `APIKey`/`Integration` já sinaliza
+   como problema (tenantId "solto" sem constraint de verdade). Isso também exigiu adicionar
+   `transactions Transaction[]` em `Tenant` (além de `wallet Wallet?`).
+2. Adicionei `@@index([planId])` em `Wallet` e `@@index([walletId])` em `Transaction` — não estavam
+   no rascunho, mas toda FK do schema existente tem índice próprio (ver `Session.userId`,
+   `AuditLog.userId` etc.), então mantive o padrão para não deixar um join comum sem índice.
+3. Nomes de campo, tipos e `@@index([tenantId])` ficaram idênticos ao proposto.
+
+Migração real gerada e aplicada:
+`prisma/migrations/20260907022547_add_billing_plan_wallet_transaction/migration.sql` — puramente
+aditiva (3 `CREATE TABLE`, 7 `CREATE INDEX`, 4 `ALTER TABLE ... ADD CONSTRAINT`), nenhuma tabela
+existente alterada. Aplicada com `prisma migrate dev` contra o Postgres de desenvolvimento local
+(`birthvoices`) e confirmada com `prisma migrate status` → "Database schema is up to date!" e
+inspeção direta via `\d "Wallet"`/`\d "Transaction"`/`\d "Plan"` (FKs e índices batendo com o
+schema). `npx prisma generate` roda limpo e expõe `prisma.plan`/`prisma.wallet`/`prisma.transaction`
+no client gerado. Nenhuma linha foi inserida em nenhuma das três tabelas — seguem vazias até que um
+fluxo de produto real (onboarding de tenant, decisão fora deste handoff) as populate, conforme
+"Teste esperado".
+
+Validações completas (typecheck/lint/test/build) no handoff
+`.agents/handoffs/onda-4/01-para-12-schema-billing-pronto.md`.
+
+Pronto para o Agente 12 trocar `BillingBackendNotReadyError` pela implementação real em
+`src/services/billingService.ts` (arquivo dele, não tocado aqui).
