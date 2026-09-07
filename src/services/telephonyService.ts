@@ -8,6 +8,10 @@ import {
   getWorkflowOpeningQuestion,
   initializeWorkflowRuntime,
   prepareWorkflowTurn,
+  resumeAfterTool,
+  type PreparedWorkflowTurn,
+  type VoiceOverride,
+  type WorkflowNode,
   type WorkflowRuntimeState,
 } from './workflowRuntimeService.js';
 import { logger } from '../lib/logger.js';
@@ -20,6 +24,12 @@ const DEFAULT_SYSTEM_PROMPT =
   'Seja acolhedora, clara e objetiva nas respostas, adequadas para serem faladas em voz alta.';
 const REPROMPT_MESSAGE = 'Desculpe, não consegui ouvir. Pode repetir, por favor?';
 const GOODBYE_MESSAGE = 'Não foi possível captar sua resposta. Vamos encerrar por aqui, tente novamente em instantes.';
+const TOOL_CHAIN_ERROR_MESSAGE = 'Desculpe, não consegui concluir essa etapa agora. Vamos encerrar por aqui, tente novamente em instantes.';
+// Defensive bound on consecutive `tool` nodes resolved in a single turn (see
+// `resolvePreparedTurn` below). `resumeAfterTool` never loops on its own — this only guards
+// against a corrupted/cyclical published graph turning one Twilio webhook request into an
+// unbounded chain of outbound HTTP calls before a TwiML response is ever sent back.
+const MAX_TOOL_CHAIN_STEPS = 10;
 
 interface ConversationTurn {
   role: 'user' | 'assistant';
@@ -170,7 +180,65 @@ export async function startOutboundCall(params: { sessionId: string; callSid: st
   return { found: true as const, greeting };
 }
 
-export async function handleTurn(params: { sessionId: string; speechResult: string }) {
+/**
+ * Resolves a `PreparedWorkflowTurn` down to a terminal mode (`'llm'` or `'direct'`), driving the
+ * mid-call `tool` continuation described in
+ * `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`: each `mode: 'tool_pending'` is
+ * resumed with `await resumeAfterTool(...)`, which performs the real HTTP call for that node and
+ * returns the next step of the graph walk — itself another `tool_pending` when a second `tool`
+ * node follows immediately. `resumeAfterTool` never throws (timeout/blocked URL/no consent all
+ * degrade to its own fallback path), so the only defensive case handled here is a corrupted state
+ * whose `currentNodeId` no longer resolves to the pending `tool` node, or a chain exceeding
+ * `MAX_TOOL_CHAIN_STEPS` — both end the call rather than hang the Twilio webhook response.
+ */
+async function resolvePreparedTurn(prepared: PreparedWorkflowTurn): Promise<PreparedWorkflowTurn> {
+  let current = prepared;
+  let steps = 0;
+
+  while (current.mode === 'tool_pending') {
+    steps += 1;
+    if (steps > MAX_TOOL_CHAIN_STEPS) {
+      logger.error('Workflow tool_pending chain exceeded the safety limit; ending the call', {
+        workflowId: current.state.workflowId,
+        currentNodeId: current.state.currentNodeId,
+      });
+      return { state: current.state, mode: 'direct', directReply: TOOL_CHAIN_ERROR_MESSAGE, shouldEnd: true };
+    }
+
+    const pendingNode = current.state.nodes.find(
+      (node): node is WorkflowNode => node.id === current.state.currentNodeId,
+    );
+
+    if (!pendingNode) {
+      logger.error('tool_pending turn without a matching pending tool node in state.nodes', {
+        workflowId: current.state.workflowId,
+        currentNodeId: current.state.currentNodeId,
+      });
+      return { state: current.state, mode: 'direct', directReply: TOOL_CHAIN_ERROR_MESSAGE, shouldEnd: true };
+    }
+
+    // Sequential by necessity: each tool's result may feed the graph position/variables the next
+    // iteration reads, so these cannot run concurrently.
+    current = await resumeAfterTool(current.state, pendingNode);
+  }
+
+  return current;
+}
+
+// Explicit union (instead of leaving `handleTurn`'s return type fully inferred) so `voiceOverride`
+// can be declared optional on the `found: true` branch — matching TypeScript's own inference for
+// the `reply`/`shouldEnd` siblings on the `found: false` branch, which is what already lets
+// existing fixtures/mocks that predate this field (`__tests__/telephony.controller.test.ts` and
+// `__tests__/telephonyService.test.ts`, both Agente 08) build a `{ found: true, reply, shouldEnd }`
+// object without it and keep compiling unchanged. See
+// `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`.
+export type HandleTurnResult =
+  | { found: false; reply?: undefined; shouldEnd?: undefined; voiceOverride?: undefined }
+  | { found: true; reply: string; shouldEnd: boolean; voiceOverride?: VoiceOverride };
+
+export async function handleTurn(
+  params: { sessionId: string; speechResult: string },
+): Promise<HandleTurnResult> {
   const session = await sessionRepository.findSessionById(params.sessionId);
   if (!session || !session.agentId) return { found: false as const };
 
@@ -183,9 +251,15 @@ export async function handleTurn(params: { sessionId: string; speechResult: stri
 
   let reply: string;
   let shouldEnd = false;
+  let voiceOverride: VoiceOverride | undefined;
 
   if (metadata.workflow) {
-    const prepared = prepareWorkflowTurn(metadata.workflow, params.speechResult);
+    // `prepareWorkflowTurn` may return `mode: 'tool_pending'` when the graph walk reaches a `tool`
+    // node mid-call (see `.agents/handoffs/onda-6/04-para-05-tool-pending-contrato.md`);
+    // `resolvePreparedTurn` drives it to a terminal `'llm'`/`'direct'` mode before this function
+    // decides how to reply, exactly as it would for the original synchronous result.
+    const prepared = await resolvePreparedTurn(prepareWorkflowTurn(metadata.workflow, params.speechResult));
+    voiceOverride = prepared.voiceOverride;
 
     if (prepared.mode === 'direct') {
       metadata.workflow = prepared.state;
@@ -227,7 +301,7 @@ export async function handleTurn(params: { sessionId: string; speechResult: stri
 
   await sessionRepository.updateSession(session.id, { metadata: metadata as unknown as Prisma.InputJsonValue });
 
-  return { found: true as const, reply, shouldEnd };
+  return { found: true as const, reply, shouldEnd, voiceOverride };
 }
 
 function formatDuration(totalSeconds: number): string {

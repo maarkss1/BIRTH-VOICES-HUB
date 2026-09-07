@@ -1,9 +1,19 @@
 import { Request, Response } from 'express';
 import twilio from 'twilio';
 import * as telephonyService from '../services/telephonyService.js';
+import type { VoiceOverride } from '../services/workflowRuntimeService.js';
 import { logger } from '../lib/logger.js';
 
 const { VoiceResponse } = twilio.twiml;
+
+// Twilio's own generated typings (`VoiceResponse.SayAttributes`) narrow `language`/`voice` to
+// large-but-closed literal unions of names Twilio actually recognizes. `VoiceOverride` (see
+// `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`) only ever carries a value drawn
+// from `workflowRuntimeService.ts`'s own `KNOWN_TWILIO_VOICE_NAMES` table — i.e. a genuine Twilio
+// voice name — so this alias plus the narrowing casts in `sayOptionsFor` below just bridge two
+// string types that are runtime-compatible by construction; it is not a blind `any`/`unknown`
+// escape hatch.
+type SayAttributes = Parameters<InstanceType<typeof VoiceResponse>['say']>[0];
 
 function sendTwiml(res: Response, twiml: InstanceType<typeof VoiceResponse>) {
   res.type('text/xml').send(twiml.toString());
@@ -11,6 +21,21 @@ function sendTwiml(res: Response, twiml: InstanceType<typeof VoiceResponse>) {
 
 function gatherActionUrl(sessionId: string): string {
   return `/api/telephony/twilio/gather?sessionId=${encodeURIComponent(sessionId)}`;
+}
+
+/**
+ * Builds the attributes for a `<Say>`/`<Gather><Say>` from an optional `voiceOverride` produced by
+ * `prepareWorkflowTurn`/`resumeAfterTool` (see
+ * `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`). Falls back to the fixed
+ * `pt-BR` default Twilio voice used everywhere else in this controller when no override is
+ * present (no `voice` node reached yet, or its configured voice has no known Twilio mapping).
+ */
+function sayOptionsFor(voiceOverride?: VoiceOverride): SayAttributes {
+  if (!voiceOverride) return { language: 'pt-BR' };
+  return {
+    language: (voiceOverride.language ?? 'pt-BR') as SayAttributes['language'],
+    voice: voiceOverride.voice as SayAttributes['voice'],
+  };
 }
 
 export async function incomingCallHandler(req: Request, res: Response) {
@@ -104,10 +129,12 @@ export async function gatherHandler(req: Request, res: Response) {
     return sendTwiml(res, twiml);
   }
 
+  const sayOptions = sayOptionsFor(result.voiceOverride);
+
   // A published Studio `end` node is a real termination boundary. Do not create another Gather
   // after it; speak the final response once and close the call deterministically.
   if (result.shouldEnd) {
-    twiml.say({ language: 'pt-BR' }, result.reply);
+    twiml.say(sayOptions, result.reply);
     twiml.hangup();
     return sendTwiml(res, twiml);
   }
@@ -119,7 +146,7 @@ export async function gatherHandler(req: Request, res: Response) {
     language: 'pt-BR',
     speechTimeout: 'auto',
   });
-  gather.say({ language: 'pt-BR' }, result.reply);
+  gather.say(sayOptions, result.reply);
   sendTwiml(res, twiml);
 }
 
