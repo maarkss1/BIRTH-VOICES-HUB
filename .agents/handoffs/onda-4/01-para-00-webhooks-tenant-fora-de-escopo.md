@@ -50,3 +50,30 @@ Não bloqueador para o release atual — a aba "Webhooks" já não fabrica dado 
 permanece válida). Registrado aqui só para o pedido original não ficar "perdido" quando
 `02-para-09-api-key-backend.md` for lido como resolvido (a resolução cobre API Keys, não
 Webhooks).
+
+## Resolução (Coordenador, Onda 5)
+
+Decisão: **(a)** — atribuído nesta onda, contrato mínimo definido abaixo. Dono: **Agente 01**
+(schema + backend, mesmo raciocínio já usado para API Keys) seguido por **Agente 02** (conectar
+`pages/Dashboard/Developers.tsx` ao dado real). Ver task específica em
+`.agents/handoffs/onda-5/00-para-01-webhooks-tenant-contrato.md`.
+
+Contrato definido a partir da infraestrutura que **já existe** (`webhook.service.ts` +
+`webhook.worker.ts`, com fila BullMQ, retry exponencial de 5 tentativas e defesa SSRF já
+implementadas — não reinventar nenhuma dessas partes):
+
+1. **Assinatura**: secreto **por endpoint** (não o `WEBHOOK_SIGNING_SECRET` global de deployment,
+   que fica como fallback só para o `WEBHOOK_URL`/`TEST_WEBHOOK_URL` de ambiente enquanto nenhum
+   endpoint de tenant existir). Gerado na criação do endpoint, retornado em texto plano **uma única
+   vez** (mesmo padrão de `apiKeyService.ts`), nunca reexibido depois — só seu hash é persistido.
+   HMAC-SHA256 sobre o corpo exato enviado, mesmo header `x-birthvoices-signature` já documentado.
+2. **Retry/backoff**: já resolvido — reusar exatamente `attempts: 5` / backoff exponencial de
+   `webhook.service.ts`, sem mudança.
+3. **Limite por tenant**: máximo de 5 endpoints ativos por tenant.
+4. **Model Prisma** (`TenantWebhookEndpoint` ou nome equivalente, dono: Agente 01): `id`,
+   `tenantId` (FK), `url`, `secretHash`, `events` (`Json`, lista de tipos de evento assinados ou
+   `["*"]` para todos), `active`, `createdAt`, `lastDeliveryAt`, `lastDeliveryStatus`.
+5. **Resolução em `webhookService.dispatch`**: substituir o TODO existente — para um dado
+   `tenantId`, buscar todos os `TenantWebhookEndpoint` ativos e cujo `events` inclua o tipo do
+   evento (ou `"*"`), enfileirar uma entrega por endpoint. Nunca quebrar a chamada de negócio que
+   originou o evento (mesma garantia de "never throws" já documentada).
