@@ -18,6 +18,7 @@ import { verifyToken } from "./src/lib/auth-tokens.js";
 import { getRedisUrl } from "./src/lib/env.js";
 import { runWithRequestId } from "./src/lib/requestContext.js";
 import { csrfProtection } from "./src/middlewares/index.js";
+import { createRateLimiter } from "./src/middlewares/rateLimit.js";
 import { hasPermission } from "./src/middlewares/rbac.js";
 import { createHealthRouter } from "./src/routes/health.routes.js";
 import apiRoutes from "./src/routes/index.js";
@@ -124,25 +125,6 @@ async function startServer() {
   // and degrade gracefully, instead of hanging every request forever waiting on the command queue.
   const redisClient = new Redis(redisUrl, { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
   redisClient.on('error', (err) => logger.error('Redis client error', err.message));
-
-  const createRateLimiter = (keyPrefix: string, limit: number, windowSeconds: number) =>
-    async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-      const ip = req.ip || (req.headers['x-forwarded-for'] as string) || 'unknown';
-      const key = `ratelimit:${keyPrefix}:${ip}`;
-
-      try {
-        const current = await redisClient.incr(key);
-        if (current === 1) {
-          await redisClient.expire(key, windowSeconds);
-        }
-        if (current > limit) {
-          return res.status(429).json({ error: "Limite de requisições excedido. Tente novamente em um minuto." });
-        }
-        next();
-      } catch {
-        next();
-      }
-    };
 
   // General limiter for the whole API, applied before body parsing so an oversized/malformed
   // body never gets parsed for a request that's about to be rejected anyway.
