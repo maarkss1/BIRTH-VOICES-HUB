@@ -135,8 +135,13 @@ jobs:
     - name: Start container and verify /health
       run: |
         set -e
+        # NODE_ENV=production, not "test": server.ts only calls server.listen() (and starts the
+        # webhook worker / schedulers) when NODE_ENV !== 'test' — that guard exists so `vitest`
+        # (which imports `appPromise` directly, never over HTTP) doesn't bind a real port or start
+        # background workers. A smoke test that actually curls the container over HTTP needs the
+        # real listening server, i.e. the same NODE_ENV Cloud Run itself runs with (see deploy.yml).
         docker run -d --name ci-smoke -p 3000:3000 \
-          -e NODE_ENV=test \
+          -e NODE_ENV=production \
           -e PORT=3000 \
           -e DATABASE_URL="postgresql://devuser:devpassword@localhost:5432/birthvoices" \
           -e REDIS_URL="redis://localhost:6379" \
