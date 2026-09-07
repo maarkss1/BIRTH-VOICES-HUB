@@ -17,6 +17,7 @@ import observabilityRoutes from './observability.routes.js';
 import auditLogRoutes from './auditLog.routes.js';
 import billingRoutes from './billing.routes.js';
 import notificationRoutes from './notification.routes.js';
+import apiKeyRoutes from './apiKey.routes.js';
 // atlasgrRoutes is intentionally NOT mounted here — it is a server-to-server webhook
 // (authenticated by shared secret, not by session cookie) and is mounted directly in server.ts
 // before csrfProtection, the same way telephonyRoutes is. See server.ts for the rationale.
@@ -41,5 +42,6 @@ router.use(observabilityRoutes);
 router.use(auditLogRoutes);
 router.use(billingRoutes);
 router.use(notificationRoutes);
+router.use(apiKeyRoutes);
 
 export default router;
