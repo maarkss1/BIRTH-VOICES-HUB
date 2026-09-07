@@ -163,6 +163,71 @@ export interface AuditLogEntry {
   timestamp?: string;
 }
 
+/** Shape returned by `GET /developers/keys` and by the `apiKey` field of the revoke endpoints. Deliberately excludes the hash and the plaintext secret — see `src/repositories/apiKeyRepository.ts`'s `API_KEY_SAFE_SELECT`, which never fetches `keyHash` in the first place, so there is no code path here that could leak it even by accident. */
+export interface ApiKeyMetadata {
+  id?: string;
+  name?: string;
+  /** @format date-time */
+  createdAt?: string;
+  /**
+   * Set on the key's first successful authenticated request; `null` if never used.
+   * @format date-time
+   */
+  lastUsedAt?: string | null;
+  /**
+   * `null` means the key never expires.
+   * @format date-time
+   */
+  expiresAt?: string | null;
+  revoked?: boolean;
+  /** @format date-time */
+  revokedAt?: string | null;
+}
+
+/** A tenant's billing wallet and current plan. The whole object is `null` (not a fabricated zero-balance wallet) when the tenant has never been onboarded to billing — see `billingService.getWalletSummary`. */
+export interface WalletSummary {
+  /** @format uuid */
+  tenantId?: string;
+  balanceCents?: number;
+  currency?: string;
+  planId?: string | null;
+  planName?: string | null;
+  planStatus?: "inactive" | "active" | "past_due" | "canceled" | "trialing";
+  /** @format date-time */
+  currentPeriodEnd?: string | null;
+}
+
+export interface TransactionSummary {
+  id?: string;
+  type?: string;
+  /** Signed — positive is a credit, negative is a debit. */
+  amountCents?: number;
+  balanceAfterCents?: number;
+  status?: string;
+  description?: string | null;
+  /** @format date-time */
+  createdAt?: string;
+}
+
+/** Global plan catalog entry — the same list for every tenant (per-tenant custom pricing is out of scope). */
+export interface PlanOption {
+  id?: string;
+  slug?: string;
+  name?: string;
+  priceCents?: number;
+  currency?: string;
+  billingInterval?: string;
+}
+
+export interface NotificationSummary {
+  id?: string;
+  title?: string;
+  message?: string;
+  isRead?: boolean;
+  /** @format date-time */
+  createdAt?: string;
+}
+
 export interface ErrorResponse {
   error?: string;
   /** Machine-readable error code, present on some error paths (e.g. `TTS_HTTP_NOT_IMPLEMENTED`, `AI_PROVIDER_CONSENT_REQUIRED`). */
@@ -2169,6 +2234,353 @@ export class Api<
         path: `/audit-log`,
         method: "GET",
         query: query,
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  apiKeys = {
+    /**
+     * @description Admin-only, tenant-scoped (`requireTenant` + `requireRole(['admin'])` — same authorization level as `/users` and `/billing/*`; a leaked or over-issued key is a security incident, not a routine self-service action for every role). The plaintext `key` in the `201` response is present **exactly once, only in this response** — it is SHA-256 hashed before being persisted and can never be retrieved again afterwards. If the caller loses it, the only remedy is to revoke this key and create a new one.
+     *
+     * @tags ApiKeys
+     * @name KeysCreate
+     * @summary Create a new tenant API key
+     * @request POST:/developers/keys
+     * @secure
+     */
+    keysCreate: (
+      data: {
+        /**
+         * Human-readable label for the key (e.g. "CI pipeline", "Zapier integration").
+         * @minLength 1
+         * @maxLength 200
+         */
+        name: string;
+        /**
+         * Optional ISO 8601 expiration. Omitted/absent means the key never expires.
+         * @format date-time
+         */
+        expiresAt?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          apiKey?: {
+            id?: string;
+            name?: string;
+            /** @format date-time */
+            createdAt?: string;
+            /** @format date-time */
+            expiresAt?: string | null;
+          };
+          /**
+           * Plaintext secret. Present only in this response — not stored anywhere in recoverable form, never logged, never returned by `GET /developers/keys` or any other endpoint.
+           * @example "bvhk_live_9f2c..."
+           */
+          key?: string;
+        },
+        ErrorResponse
+      >({
+        path: `/developers/keys`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Admin-only. Metadata only — never includes the hash or the plaintext key.
+     *
+     * @tags ApiKeys
+     * @name KeysList
+     * @summary List the tenant's API keys
+     * @request GET:/developers/keys
+     * @secure
+     */
+    keysList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          apiKeys?: ApiKeyMetadata[];
+        },
+        ErrorResponse
+      >({
+        path: `/developers/keys`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Admin-only. Alias of `POST /developers/keys/{id}/revoke` — same controller, same audit action (`API_KEY_REVOKE`). Tenant-scoped lookup: a key belonging to another tenant is indistinguishable from a nonexistent one (`404`). Idempotent — revoking an already-revoked key returns `200` rather than an error.
+     *
+     * @tags ApiKeys
+     * @name KeysDelete
+     * @summary Revoke an API key
+     * @request DELETE:/developers/keys/{id}
+     * @secure
+     */
+    keysDelete: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          /** Shape returned by `GET /developers/keys` and by the `apiKey` field of the revoke endpoints. Deliberately excludes the hash and the plaintext secret — see `src/repositories/apiKeyRepository.ts`'s `API_KEY_SAFE_SELECT`, which never fetches `keyHash` in the first place, so there is no code path here that could leak it even by accident. */
+          apiKey?: ApiKeyMetadata;
+        },
+        ErrorResponse
+      >({
+        path: `/developers/keys/${id}`,
+        method: "DELETE",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Identical behavior to `DELETE /developers/keys/{id}` — provided for callers/UIs that prefer an explicit action verb over the `DELETE` HTTP method.
+     *
+     * @tags ApiKeys
+     * @name KeysRevokeCreate
+     * @summary Revoke an API key (explicit-verb alias)
+     * @request POST:/developers/keys/{id}/revoke
+     * @secure
+     */
+    keysRevokeCreate: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          success?: boolean;
+          /** Shape returned by `GET /developers/keys` and by the `apiKey` field of the revoke endpoints. Deliberately excludes the hash and the plaintext secret — see `src/repositories/apiKeyRepository.ts`'s `API_KEY_SAFE_SELECT`, which never fetches `keyHash` in the first place, so there is no code path here that could leak it even by accident. */
+          apiKey?: ApiKeyMetadata;
+        },
+        ErrorResponse
+      >({
+        path: `/developers/keys/${id}/revoke`,
+        method: "POST",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  billing = {
+    /**
+     * @description Admin-only. `wallet: null` is a real, explicit empty state (tenant never onboarded to billing, no `Wallet` row yet) — not an error; render it as an empty state, never a fabricated zero-balance wallet.
+     *
+     * @tags Billing
+     * @name SummaryList
+     * @summary Wallet balance and current plan
+     * @request GET:/billing/summary
+     * @secure
+     */
+    summaryList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          wallet?: WalletSummary | null;
+        },
+        ErrorResponse
+      >({
+        path: `/billing/summary`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Admin-only. Tenant-scoped (`req.tenantId`, never a query param), ordered newest-first.
+     *
+     * @tags Billing
+     * @name TransactionsList
+     * @summary Paginated transaction history
+     * @request GET:/billing/transactions
+     * @secure
+     */
+    transactionsList: (
+      query?: {
+        /**
+         * 1-based page number. Non-numeric or out-of-range values fall back to `1`.
+         * @min 1
+         * @default 1
+         */
+        page?: number;
+        /**
+         * Entries per page, clamped to `[1, 100]`. Non-numeric values fall back to the default.
+         * @min 1
+         * @max 100
+         * @default 20
+         */
+        pageSize?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          items?: TransactionSummary[];
+          page?: number;
+          pageSize?: number;
+          total?: number;
+          totalPages?: number;
+        },
+        ErrorResponse
+      >({
+        path: `/billing/transactions`,
+        method: "GET",
+        query: query,
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Any authenticated tenant member — not admin-gated, unlike the other `/billing/*` endpoints, since this is a read-only global catalog (same list for every tenant), not tenant-specific data.
+     *
+     * @tags Billing
+     * @name PlansList
+     * @summary List available subscription plans
+     * @request GET:/billing/plans
+     * @secure
+     */
+    plansList: (params: RequestParams = {}) =>
+      this.request<
+        {
+          plans?: PlanOption[];
+        },
+        ErrorResponse
+      >({
+        path: `/billing/plans`,
+        method: "GET",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Admin-only. Only `effectiveAt: "immediate"` is implemented: `Wallet` has no `currentPeriodStart`, so there is no way to compute a prorated amount or a "next cycle" date — a request with `effectiveAt: "next_cycle"` gets an explicit `400` (`ProrationNotSupportedError`), never a silent fallback to immediate. On success, also raises an in-app notification for the acting admin (best-effort — a failure to notify never fails the plan change itself, which has already committed).
+     *
+     * @tags Billing
+     * @name ChangePlanCreate
+     * @summary Upgrade or downgrade the tenant's plan
+     * @request POST:/billing/change-plan
+     * @secure
+     */
+    changePlanCreate: (
+      data: {
+        planId: string;
+        /**
+         * `next_cycle` is accepted by the schema but rejected with `400` — see description above.
+         * @default "immediate"
+         */
+        effectiveAt?: "immediate" | "next_cycle";
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          /** A tenant's billing wallet and current plan. The whole object is `null` (not a fabricated zero-balance wallet) when the tenant has never been onboarded to billing — see `billingService.getWalletSummary`. */
+          wallet?: WalletSummary;
+        },
+        ErrorResponse
+      >({
+        path: `/billing/change-plan`,
+        method: "POST",
+        body: data,
+        secure: true,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  notifications = {
+    /**
+     * @description Scoped to `req.user.id` (never a query/body param) — not admin-gated, unlike `/billing/*` and `/developers/keys`: any authenticated tenant member reads and manages only their own notifications. Includes `unreadCount` for the bell-badge UI.
+     *
+     * @tags Notifications
+     * @name NotificationsList
+     * @summary Paginated notification feed for the caller
+     * @request GET:/notifications
+     * @secure
+     */
+    notificationsList: (
+      query?: {
+        /**
+         * 1-based page number. Non-numeric or out-of-range values fall back to `1`.
+         * @min 1
+         * @default 1
+         */
+        page?: number;
+        /**
+         * Entries per page, clamped to `[1, 100]`. Non-numeric values fall back to the default.
+         * @min 1
+         * @max 100
+         * @default 20
+         */
+        pageSize?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          items?: NotificationSummary[];
+          unreadCount?: number;
+          page?: number;
+          pageSize?: number;
+          total?: number;
+          totalPages?: number;
+        },
+        ErrorResponse
+      >({
+        path: `/notifications`,
+        method: "GET",
+        query: query,
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Ownership is verified against `req.user.id` inside the service/repository layer; a notification belonging to another user resolves to the same `404` as one that does not exist at all — never reveals that a resource exists in someone else's account.
+     *
+     * @tags Notifications
+     * @name ReadCreate
+     * @summary Mark one notification as read
+     * @request POST:/notifications/{id}/read
+     * @secure
+     */
+    readCreate: (id: string, params: RequestParams = {}) =>
+      this.request<
+        {
+          notification?: NotificationSummary;
+        },
+        ErrorResponse
+      >({
+        path: `/notifications/${id}/read`,
+        method: "POST",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Bulk action for the notification panel's header ("mark all as read").
+     *
+     * @tags Notifications
+     * @name ReadAllCreate
+     * @summary Mark all of the caller's notifications as read
+     * @request POST:/notifications/read-all
+     * @secure
+     */
+    readAllCreate: (params: RequestParams = {}) =>
+      this.request<
+        {
+          updatedCount?: number;
+        },
+        ErrorResponse
+      >({
+        path: `/notifications/read-all`,
+        method: "POST",
         secure: true,
         format: "json",
         ...params,

@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 09 (SDK, Contratos e Documentação de API)
 - Onda: 4
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -48,3 +48,45 @@ Não bloqueador. Testes automatizados cobrindo o backend:
 `src/middlewares/apiKeyAuth.test.ts`. Validação manual ponta a ponta documentada no relatório da
 Onda (registro → criação → listagem → autenticação Bearer → revogação → isolamento de tenant →
 gate de role).
+
+## Resolução
+Documentados os 4 endpoints de API Keys em `docs/api/openapi.yaml`, exatamente como
+especificado neste handoff:
+
+- `POST /developers/keys` — request `{ name, expiresAt? }`; `201` com
+  `{ apiKey: { id, name, createdAt, expiresAt }, key }`; comentário explícito no schema e na
+  descrição do endpoint avisando que `key` (texto claro) só existe nesta resposta e nunca mais é
+  recuperável; `400`/`401`/`403` documentados.
+- `GET /developers/keys` — `200` com `{ apiKeys: ApiKeyMetadata[] }` (novo schema
+  `ApiKeyMetadata`: `id, name, createdAt, lastUsedAt, expiresAt, revoked, revokedAt` — sem
+  `keyHash` nem chave em claro).
+- `DELETE /developers/keys/{id}` e `POST /developers/keys/{id}/revoke` — documentados como
+  aliases idênticos (`200` com `{ success: true, apiKey: ApiKeyMetadata }`, `404` se a chave não
+  existe/pertence a outro tenant), cada um remetendo ao outro na descrição.
+- Novo `securityScheme` `apiKeyAuth` (`type: http, scheme: bearer`) em `components.securitySchemes`,
+  documentado como alternativa global — adicionado a `security:` no nível do documento junto de
+  `bearerAuth` (lista de duas entradas = OR, não AND) — cobrindo o pedido de registrar
+  `Authorization: Bearer bvhk_live_...` como segundo esquema de autenticação válido para qualquer
+  rota, não só estes 4 endpoints. Não existia `cookieAuth` no spec atual, então segui a alternativa
+  já prevista no pedido ("ou o esquema equivalente já usado por `/billing/*`/`/users`"): esses
+  endpoints usam a `security` padrão do documento (sem override por operação), e é isso que os 4
+  endpoints de API Keys também fazem.
+
+Aproveitei a mesma passada (auditoria já cobre onda atual) para documentar os dois outros grupos
+sinalizados como pendentes desde a última auditoria — `billing.routes.ts` e
+`notification.routes.ts` — com o mesmo rigor (ver relatório final do agente para detalhes:
+schemas `WalletSummary`/`TransactionSummary`/`PlanOption`/`NotificationSummary`, paginação
+`page`/`pageSize`/`total`/`totalPages` no padrão já usado por `GET /audit-log`).
+
+`packages/sdk/` regenerado via `npm run generate` (swagger-typescript-api) a partir do OpenAPI
+atualizado — `packages/sdk/src/Api.ts` ganhou os métodos e tipos dos três domínios, compila limpo
+(`tsc --noEmit` dentro do pacote e `npm run build` do pacote, ambos sem erro). Nenhuma referência a
+`keyHash` fora de um comentário de documentação, e `key?: string` aparece exatamente uma vez (na
+resposta de criação) — teste esperado deste handoff confirmado.
+
+Validações na raiz do monorepo após a mudança: `npm run typecheck` (limpo), `npm run lint` (0
+erros, 123 warnings pré-existentes de `@typescript-eslint/no-explicit-any` em arquivos de teste,
+nenhum novo), `npm run build` (sucesso, `vite build` + bundle do servidor).
+
+Arquivos alterados: `docs/api/openapi.yaml`, `packages/sdk/src/Api.ts`. Nenhuma rota/controller,
+`prisma/schema.prisma` ou arquivo fora do domínio deste agente foi tocado.
