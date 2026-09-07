@@ -17,7 +17,7 @@ used when this document was first created at Agent 07's request in Onda 2 (see s
 above). `docs/patterns/**` remains Agent 09's file ownership for everything else; ping 09 to
 review/sync this page if anything here reads as inconsistent with the rest of `docs/patterns/**`.
 
-**Onda 6 update**: §2/§3 updated again by Agent 04 for two changes specified in
+**Onda 6 update (rodada 1)**: §2/§3 updated again by Agent 04 for two changes specified in
 `.agents/handoffs/onda-6/00-para-04-tool-midcall-voice-upload.md`: (1) a `tool` node reached
 mid-call now pauses as `mode: 'tool_pending'` instead of degrading straight to the failure
 fallback — see the `tool` subsection below and
@@ -28,7 +28,21 @@ list broke the "any unsupported node type" example fixture in three tests owned 
 (`__tests__/workflowRuntimeService.test.ts`, `__tests__/workflowPublishGate.test.ts` — Agente 08;
 `src/services/workflowVersioning.test.ts` — Agente 07, per that file's own header comment) — see
 the corresponding `04-para-07-*`/`04-para-08-*` handoffs in this same onda for the one-line fixture
-fix each needs (swap the example node from `voice` to `human_handoff`, which remains blocked).
+fix each needs (swap the example node from `voice` to `human_handoff`, which remained blocked at
+the time).
+
+**Onda 6 update (rodada 2)**: §2/§3 updated again for
+`.agents/handoffs/onda-6/00-para-04-human-handoff-mvp.md`: `human_handoff` is no longer blocked at
+publish time either — it dials the node's own literal `fallbackNumber` directly (no department ->
+number lookup, no schema change), see the new `human_handoff` subsection below and
+`.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`. This means **no Studio node type
+is unsupported by the runtime's capability gate any more** — the exact same fixture-churn problem
+rodada 1 caused repeats: the three tests above had just been updated to use `human_handoff` as
+their "any unsupported node type" example (`test(00): update voice-as-unsupported-example fixtures
+ahead of Agente 04's Onda 6 merge`), and unblocking it broke them again. See the new
+`04-para-07-*`/`04-para-08-*` handoffs for rodada 2, which suggest breaking this recurring pattern
+by switching the example to a synthetically-unknown node type instead of a real domain node type
+that keeps getting unblocked onda after onda.
 
 ## 1. Where the runtime reads a workflow "ready to execute"
 
@@ -65,14 +79,16 @@ existed loosely in Onda 2 and is now a hard publish-time gate, not a runtime cra
 ### What the runtime actually executes today
 
 `start`, `llm`, `prompt`, `question`, `condition`, `switch`, `memory`, `end`, `knowledge`, `tool`,
-`voice` — consumed by `src/services/telephonyService.ts` for real phone calls (Twilio). The
-published version's snapshot is persisted on the phone session and stays stable for the whole
-call; the LLM calls inside it always carry the session's real `tenantId` (consent, rate limiting,
-cost accounting, and telemetry stay tenant-correct end to end). `knowledge`/`tool` were added in
-Onda 5 (`.agents/handoffs/onda-5/00-para-04-motor-execucao-knowledge-tool.md`); `voice` and the
-`tool` mid-call continuation were added in Onda 6
-(`.agents/handoffs/onda-6/00-para-04-tool-midcall-voice-upload.md`) — see their own subsections
-below for execution semantics and honest limitations.
+`voice`, `human_handoff` — every Studio node type — consumed by `src/services/telephonyService.ts`
+for real phone calls (Twilio). The published version's snapshot is persisted on the phone session
+and stays stable for the whole call; the LLM calls inside it always carry the session's real
+`tenantId` (consent, rate limiting, cost accounting, and telemetry stay tenant-correct end to end).
+`knowledge`/`tool` were added in Onda 5
+(`.agents/handoffs/onda-5/00-para-04-motor-execucao-knowledge-tool.md`); `voice` and the `tool`
+mid-call continuation were added in Onda 6 rodada 1
+(`.agents/handoffs/onda-6/00-para-04-tool-midcall-voice-upload.md`); `human_handoff` was added in
+Onda 6 rodada 2 (`.agents/handoffs/onda-6/00-para-04-human-handoff-mvp.md`) — see their own
+subsections below for execution semantics and honest limitations.
 
 #### `knowledge` execution semantics
 
@@ -163,20 +179,75 @@ deterministic node.
   `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md` for the exact contract; that
   handoff's `Status` field says whether the Twilio side has picked it up yet.
 
+#### `human_handoff` execution semantics (Onda 6 rodada 2 MVP: direct dial to a literal number)
+
+`.agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md` originally blocked this node on
+a missing product decision: "department -> real phone number" routing would have required a new
+lookup table/schema change. The Coordinator found a narrower path that needs neither
+(`.agents/handoffs/onda-6/00-para-04-human-handoff-mvp.md`): the Studio node's own
+`defaultConfig.fallbackNumber` (`store/useStudioStore.ts` → `nodeRegistry.human_handoff`) is
+already a **literal phone number** (e.g. `'+5511999999999'`), not a lookup key — the runtime just
+needed to read it and hand it to the telephony layer.
+
+- `human_handoff` is a **terminal-of-turn** node, exactly like `prompt`/`question`/`tool`: the
+  synchronous graph walk (`advanceUntilInteraction`) stops there and
+  `PreparedWorkflowTurn.mode` becomes `'transfer'` with a populated `transferDetails`. Unlike
+  `tool`, there is **no resume function** — the runtime has nothing left to execute once a real
+  telephony bridge (Agente 05, `telephony.controller.ts`) takes over; this matches the node's own
+  Studio registry cardinality (`outputs: 0` — it is not meant to route back into the graph).
+- `TransferDetails` is resolved straight from the node's own config, never a department lookup:
+  - `to` = `config.fallbackNumber` (string). **Required** — if it is missing/empty, the node is
+    **never** a stopping point: the walk logs a warning, records
+    `variables.handoff_ok = 'false'` / `variables.handoff_error = 'fallback_number_missing'` (plus
+    a per-node-id copy, mirroring `applyToolFallback`'s naming), and continues past it on its
+    default outgoing edge — exactly like a failed `tool` call. AGENTS.md §14 forbids fabricating a
+    number, so there is no "closest" or "default" destination invented here.
+  - `timeoutSec` = `config.ringTimeoutSec` (number), defaulting to `30` when missing/not a finite
+    number.
+  - `record` = truthy-parsed `config.recordCall` (the Studio persists it as the string `'true'`/
+    `'false'`, not a JS boolean — same tolerant-truthy pattern already used for
+    `naturalLanguageCheck`).
+  - `message` = `config.transferMessage`, defaulting to `"Aguarde um momento enquanto encaminho sua
+    ligação."` when missing/empty.
+  - `department` = `config.department`, included in `TransferDetails` **only as a label** for
+    Agente 05's own logging/observability. It is **never** resolved into a phone number — a real
+    department -> PBX-line routing feature remains a separate, out-of-scope product decision, same
+    as rodada 1 left it; this MVP dials `fallbackNumber` regardless of `department`'s value.
+- A `human_handoff` reached in the initial graph segment (before the call's first
+  `prompt`/`question`, i.e. inside `initializeWorkflowRuntime`) stops the walk there exactly the
+  same way, but — same known limitation already documented for `voice`'s opening greeting —
+  `initializeWorkflowRuntime` returns a bare `WorkflowRuntimeState`, not a `PreparedWorkflowTurn`,
+  so nothing surfaces `mode: 'transfer'` for that very first turn yet. `currentNodeId` stays
+  correctly parked on the node, so the next `prepareWorkflowTurn` call re-signals `'transfer'` via
+  the same defensive re-check the `tool` node already relies on.
+- No publish-time validation requires `fallbackNumber` to be present — a graph with a
+  misconfigured `human_handoff` still publishes; the missing-destination case degrades honestly at
+  runtime (never at publish) exactly as described above. This is a deliberate MVP choice, not an
+  oversight: `ValidationEngine.ts`'s structural gate and `validateRuntimeCompatibility()`'s
+  capability gate are only about "can the runtime attempt to execute this node type at all", not
+  "is this particular instance perfectly configured" — the same latitude every other node type
+  already gets (e.g. a `tool` node with an unreachable `endpoint` also publishes fine and fails at
+  call time).
+- `transferDetails` is consumed by Agente 05 in `telephony.controller.ts`
+  (`<Say>` + `<Dial>`) — see
+  `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md` for the exact contract; that
+  handoff's `Status` field says whether the Twilio side has picked it up yet.
+
 ### What is blocked at publish time (preview/draft only in the Studio)
 
-`human_handoff` — it remains selectable and configurable in the Studio canvas (so editing isn't
-regressed), but `publishWorkflow()` rejects a graph that depends on it with an explicit error. Non-
-deterministic fan-out, an unknown LLM provider, an invalid validation regex, and a conditional
-branch without a resolvable handle also fail closed. `human_handoff` requires a telephony transfer
-bridge in `src/services/telephonyService.ts` (Agente 05 exclusive) that remains out of scope — see
-`.agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md` for the original design proposal
-(its Option 1 is what unblocked `voice` in Onda 6; `human_handoff` never had an equivalent
-"MVP-without-a-bridge" option).
+No Studio node type is unsupported by the runtime's capability gate as of Onda 6 rodada 2 — every
+type in `lib/studio/types.ts`'s `NodeType` union now has a real (if MVP-scoped, for `voice`/
+`human_handoff`) execution path. `validateRuntimeCompatibility()` still fails a graph closed for
+non-structural reasons: non-deterministic fan-out, an unknown LLM provider, an unsupported `tool`
+HTTP method, an invalid `condition`/`question` validation regex, and a conditional branch without a
+resolvable handle. `UNSUPPORTED_REASON` in `workflowRuntimeService.ts` is kept as an empty lookup
+table (the extension point for the next node type that needs an unsupported-type rejection),
+rather than removed, precisely so this section does not need reshaping again the next time a node
+type is added to the Studio catalog ahead of the runtime supporting it.
 
-If support for `human_handoff` is added to the runtime, update this document and the "blocked at
-publish" list above in the same change — do not let this file drift from
-`validateRuntimeCompatibility()`'s actual behavior.
+If a future node type is added to the Studio catalog before the runtime can execute it, update this
+document and the "blocked at publish" paragraph above in the same change — do not let this file
+drift from `validateRuntimeCompatibility()`'s actual behavior.
 
 ## 3. `StudioNode` shape (`lib/studio/types.ts`)
 
@@ -210,20 +281,25 @@ type StudioNode = Node<StudioNodeData, NodeType>; // @xyflow/react Node generic
 | `knowledge` | `database` (required), `ragTopK`†, `minScoreThreshold`, `searchStrategy`†, `autoChunkSize`† |
 | `tool` | `method`, `endpoint` (required), `headers`, `bodyPayload`, `timeoutMs`, `retryLimit` |
 | `memory` | `operation`, `variableName`, `variableValue`, `scope` |
-| `human_handoff`⚠ | `department`, `fallbackNumber`, `ringTimeoutSec`, `recordCall`, `transferMessage` |
+| `human_handoff`§ | `department`§§, `fallbackNumber`, `ringTimeoutSec`, `recordCall`, `transferMessage` |
 | `end` | `saveTranscript`, `exportToWebhook`, `postCallSurvey` |
 
-⚠ = blocked at publish time today (§2). † = accepted by the Studio config schema but **not
-honored** by the runtime's execution for that node type — see §2's "`knowledge` execution
-semantics" (keyword-confidence lookup, not real chunked/ranked retrieval) and "`voice` execution
-semantics" (ElevenLabs-specific synthesis controls have no Twilio `<Say>` equivalent) for why. ‡ =
-executable since Onda 6, but only a `voiceId` that is already a real, documented Twilio-native
-voice name resolves to a non-empty `voiceOverride` — see §2's "`voice` execution semantics" for the
-never-fabricate rule this follows. Fields marked "required" are exactly what `ValidationEngine.ts`
-rejects as a structural error when missing/empty — a published (`active`) workflow is guaranteed to
-have these keys present and non-empty; the runtime does not need to re-validate presence for
-structural safety, only handle real execution failures (endpoint down, provider unavailable, tool
-timeout) normally.
+† = accepted by the Studio config schema but **not honored** by the runtime's execution for that
+node type — see §2's "`knowledge` execution semantics" (keyword-confidence lookup, not real
+chunked/ranked retrieval) and "`voice` execution semantics" (ElevenLabs-specific synthesis controls
+have no Twilio `<Say>` equivalent) for why. ‡ = executable since Onda 6 rodada 1, but only a
+`voiceId` that is already a real, documented Twilio-native voice name resolves to a non-empty
+`voiceOverride` — see §2's "`voice` execution semantics" for the never-fabricate rule this follows.
+§ = executable since Onda 6 rodada 2, but **not required at publish time** — see §2's
+"`human_handoff` execution semantics" for why a missing `fallbackNumber` degrades gracefully at
+runtime (never invents a number) instead of failing the publish gate. §§ = `department` is a label
+only, never resolved into a phone number/PBX line — see the same subsection. Fields marked
+"required" (none for `human_handoff` — see § above) are exactly what `ValidationEngine.ts` rejects
+as a structural error when missing/empty for the node types that do have one; a published
+(`active`) workflow is guaranteed to have those keys present and non-empty where required; the
+runtime does not need to re-validate presence for structural safety in those cases, only handle
+real execution failures (endpoint down, provider unavailable, tool timeout, missing
+`fallbackNumber`) normally.
 
 ## 4. `StudioEdge` shape and conditional routing
 
@@ -266,27 +342,37 @@ interface StudioEdgeData {
 These live in `__tests__/**`, owned by Agent 08 — this document only describes what they already
 assert; it does not duplicate their assertions as a second source of truth that could drift.
 
-`knowledge`/`tool` (added Onda 5) and `tool_pending`/`voice` (added Onda 6) are additionally
-covered outside `__tests__/**` (Agent 04's own files, following the same co-located-test precedent
-already used elsewhere in the repo — e.g. `src/features/prospecting/routes/atlasgr.routes.test.ts`):
+`knowledge`/`tool` (added Onda 5) and `tool_pending`/`voice`/`human_handoff` (added Onda 6) are
+additionally covered outside `__tests__/**` (Agent 04's own files, following the same
+co-located-test precedent already used elsewhere in the repo — e.g.
+`src/features/prospecting/routes/atlasgr.routes.test.ts`):
 
 - `lib/voice-runtime/HttpToolExecutor.test.ts` — SSRF defense (blocked private/reserved hosts),
   unsupported-method rejection, timeout, retry-then-succeed, retry exhaustion, non-2xx handling,
   and that a hostile timeout/retryLimit configuration is clamped rather than trusted.
 - `src/services/workflowRuntimeService.knowledgeTool.test.ts` — `validateRuntimeCompatibility` no
-  longer blocking `knowledge`/`tool`/`voice` (while still blocking `human_handoff`); a confident
-  `knowledge` match reaching the next LLM's `systemInstruction`; a low-confidence/no-match query
-  never fabricating a result; cross-tenant isolation (an `agentId` not owned by the calling
-  `tenantId` yields zero documents, never another tenant's); a `tool` node executing for real (and
-  exposing `tool_ok`/`tool_result`) when reached during `initializeWorkflowRuntime`; a blocked URL
-  degrading to the `tool_error` fallback without ever crashing call setup; a `tool` node reached
-  mid-call (via the synchronous `prepareWorkflowTurn`) pausing as `tool_pending` (Onda 6) instead of
-  faking a fallback; `resumeAfterTool` performing the real HTTP call for that paused node and
-  continuing the graph (including a `start -> question -> tool -> prompt` workflow that actually
-  calls the endpoint with a variable collected earlier in the same call); `resumeAfterTool` gated
-  on the same consent check as call-start; a `voice` node resolving `voiceOverride` only for an
-  already-valid Twilio/Polly voice name, never fabricating one for the Studio's ElevenLabs default;
-  and `voice` behaving as a passive node that never blocks its own outgoing edge.
+  longer blocking `knowledge`/`tool`/`voice`/`human_handoff` (no node type is unsupported today,
+  and a `human_handoff` with no `fallbackNumber` still publishes); a confident `knowledge` match
+  reaching the next LLM's `systemInstruction`; a low-confidence/no-match query never fabricating a
+  result; cross-tenant isolation (an `agentId` not owned by the calling `tenantId` yields zero
+  documents, never another tenant's); a `tool` node executing for real (and exposing
+  `tool_ok`/`tool_result`) when reached during `initializeWorkflowRuntime`; a blocked URL degrading
+  to the `tool_error` fallback without ever crashing call setup; a `tool` node reached mid-call (via
+  the synchronous `prepareWorkflowTurn`) pausing as `tool_pending` (Onda 6) instead of faking a
+  fallback; `resumeAfterTool` performing the real HTTP call for that paused node and continuing the
+  graph (including a `start -> question -> tool -> prompt` workflow that actually calls the
+  endpoint with a variable collected earlier in the same call); `resumeAfterTool` gated on the same
+  consent check as call-start; a `voice` node resolving `voiceOverride` only for an already-valid
+  Twilio/Polly voice name, never fabricating one for the Studio's ElevenLabs default; `voice`
+  behaving as a passive node that never blocks its own outgoing edge; a `human_handoff` reached
+  mid-call (`start -> question -> human_handoff -> end`) returning `mode: 'transfer'` with
+  `transferDetails.to` equal to the configured `fallbackNumber`, plus honest defaults for
+  `ringTimeoutSec`/`recordCall`/`transferMessage`/`department`; a `human_handoff` with a missing/
+  empty `fallbackNumber` never producing `mode: 'transfer'` (it degrades like a failed `tool`,
+  setting `handoff_ok`/`handoff_error` and continuing past the node instead); a `human_handoff`
+  reached in the initial graph segment correctly parking `currentNodeId` there without fabricating
+  a transfer, with the very next turn re-signaling `'transfer'`; and a `tool -> human_handoff` chain
+  where `resumeAfterTool` itself surfaces `mode: 'transfer'` once the tool call completes.
 - `src/controllers/knowledge.controller.test.ts` — the Onda 6 text-only knowledge upload endpoint:
   an infected upload (EICAR) rejected with 422 and never indexed; the antivirus scanner itself
   being unavailable rejected with 503 (fail closed) and never indexed; a clean, valid `.md` upload
@@ -295,7 +381,13 @@ already used elsewhere in the repo — e.g. `src/features/prospecting/routes/atl
   not merely in addition to it; and the usual 404/400 guards (unknown/foreign agent, missing
   fields).
 
-Three fixtures owned by other agents used `voice` purely as an example of "any node type the
-runtime does not yet support" and now need a one-line update (swap the node type to
-`human_handoff`, which remains blocked) — see `.agents/handoffs/onda-6/04-para-07-*.md` and
-`04-para-08-*.md` for exactly which assertions and the suggested fix.
+**Known cross-agent test debt (rodada 2)**: three fixtures owned by other agents
+(`__tests__/workflowRuntimeService.test.ts`, `__tests__/workflowPublishGate.test.ts` — Agente 08;
+`src/services/workflowVersioning.test.ts` — Agente 07) used `human_handoff` as their "any node type
+the runtime does not yet support" example — the very fixture the Coordinator had them swap to in
+rodada 1 specifically because `voice` had just stopped being a valid example. Unblocking
+`human_handoff` in rodada 2 broke the same 4 assertions again for the same underlying reason: **no
+real Studio node type is unsupported any more**, so this class of fixture has no stable target left
+to swap to. See `.agents/handoffs/onda-6/04-para-07-human-handoff-fixture-desatualizada.md` and
+`04-para-08-human-handoff-fixtures-desatualizadas.md` for the exact failures and a suggested fix
+that breaks the cycle (a synthetically-unknown node type instead of a real one).

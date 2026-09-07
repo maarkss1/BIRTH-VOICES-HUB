@@ -103,18 +103,20 @@ afterEach(() => {
   global.fetch = originalFetch;
 });
 
-describe('validateRuntimeCompatibility: knowledge/tool are no longer blocked', () => {
-  it('accepts a graph using knowledge and tool nodes (only voice/human_handoff stay blocked)', () => {
+describe('validateRuntimeCompatibility: knowledge/tool/human_handoff are no longer blocked', () => {
+  it('accepts a graph using knowledge, tool and human_handoff nodes (no node type is unsupported today)', () => {
     const nodes = [
       node('start-1', 'start'),
       node('knowledge-1', 'knowledge', { database: 'faq' }),
       node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/lookup' }),
+      node('handoff-1', 'human_handoff', { department: 'vendas', fallbackNumber: '+5511999999999' }),
       node('end-1', 'end'),
     ];
     const edges = [
       edge('e1', 'start-1', 'knowledge-1'),
       edge('e2', 'knowledge-1', 'tool-1'),
-      edge('e3', 'tool-1', 'end-1'),
+      edge('e3', 'tool-1', 'handoff-1'),
+      edge('e4', 'handoff-1', 'end-1'),
     ];
 
     const issues = validateRuntimeCompatibility(nodes, edges);
@@ -122,7 +124,7 @@ describe('validateRuntimeCompatibility: knowledge/tool are no longer blocked', (
     expect(issues).toEqual([]);
   });
 
-  it('still fails closed for human_handoff (voice became executable in Onda 6 — see the dedicated describe block below)', () => {
+  it('accepts a human_handoff node with no fallbackNumber at publish time (the missing-destination case degrades at runtime, not at publish — see the dedicated describe block below)', () => {
     const nodes = [
       node('start-1', 'start'),
       node('handoff-1', 'human_handoff', { department: 'vendas' }),
@@ -135,9 +137,7 @@ describe('validateRuntimeCompatibility: knowledge/tool are no longer blocked', (
 
     const issues = validateRuntimeCompatibility(nodes, edges);
 
-    expect(issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-handoff-1', type: 'error' }),
-    ]));
+    expect(issues).toEqual([]);
   });
 
   it('rejects a tool node configured with an unsupported HTTP method', () => {
@@ -551,5 +551,153 @@ describe('voice node execution (Onda 6 MVP: Twilio-native named TTS)', () => {
 
     expect(state?.currentNodeId).toBe('end-1');
     expect(state?.ended).toBe(true);
+  });
+});
+
+describe('human_handoff node execution (Onda 6 rodada 2 MVP: direct dial to the node\'s own literal fallbackNumber)', () => {
+  it('mid-call: prepareWorkflowTurn reaching human_handoff returns mode "transfer" with transferDetails.to equal to the configured fallbackNumber (start -> question -> human_handoff -> end)', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'intent' }),
+      node('handoff-1', 'human_handoff', {
+        department: 'Suporte Técnico',
+        fallbackNumber: '+5511999999999',
+        ringTimeoutSec: 45,
+        recordCall: 'true',
+        transferMessage: 'Só um instante, vou te transferir.',
+      }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'handoff-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'handoff-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    expect(state?.currentNodeId).toBe('question-1');
+
+    const prepared = prepareWorkflowTurn(state!, 'Preciso falar com um atendente');
+
+    expect(prepared.mode).toBe('transfer');
+    expect(prepared.shouldEnd).toBe(false);
+    expect(prepared.state.currentNodeId).toBe('handoff-1');
+    expect(prepared.transferDetails).toEqual({
+      to: '+5511999999999',
+      timeoutSec: 45,
+      record: true,
+      message: 'Só um instante, vou te transferir.',
+      department: 'Suporte Técnico',
+    });
+  });
+
+  it('applies honest defaults when ringTimeoutSec/recordCall/transferMessage/department are absent', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'intent' }),
+      node('handoff-1', 'human_handoff', { fallbackNumber: '+5511988887777' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'handoff-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'handoff-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'Quero um atendente');
+
+    expect(prepared.mode).toBe('transfer');
+    expect(prepared.transferDetails).toEqual({
+      to: '+5511988887777',
+      timeoutSec: 30,
+      record: false,
+      message: 'Aguarde um momento enquanto encaminho sua ligação.',
+    });
+  });
+
+  it('never fabricates a transfer destination when fallbackNumber is missing/empty — degrades like a failed tool and continues on the default path instead', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'intent' }),
+      node('handoff-1', 'human_handoff', { department: 'vendas', fallbackNumber: '' }),
+      node('prompt-1', 'prompt', { promptText: 'Sem transferência disponível: {{handoff_error}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'handoff-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'handoff-1', 'prompt-1'),
+      edge('e5', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'Quero um atendente');
+
+    expect(prepared.mode).not.toBe('transfer');
+    expect(prepared.transferDetails).toBeUndefined();
+    expect(prepared.mode).toBe('llm');
+    expect(prepared.systemInstruction).toBe('Sem transferência disponível: fallback_number_missing');
+    expect(prepared.state.variables.handoff_ok).toBe('false');
+    expect(prepared.state.variables.handoff_error).toBe('fallback_number_missing');
+  });
+
+  it('reached in the initial segment (start -> human_handoff), initializeWorkflowRuntime stops there without fabricating a transfer, and the very next prepareWorkflowTurn call re-signals "transfer" (defensive re-check, same shape as the tool node\'s)', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('handoff-1', 'human_handoff', { fallbackNumber: '+5511977776666' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'handoff-1'), edge('e2', 'handoff-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(state?.currentNodeId).toBe('handoff-1');
+    expect(state?.ended).toBe(false);
+
+    const prepared = prepareWorkflowTurn(state!, '');
+
+    expect(prepared.mode).toBe('transfer');
+    expect(prepared.transferDetails?.to).toBe('+5511977776666');
+  });
+
+  it('a tool node followed immediately by human_handoff: resumeAfterTool continues the walk and reports "transfer" for the caller to bridge', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup' }),
+      node('handoff-1', 'human_handoff', { fallbackNumber: '+5511966665555' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'tool-1', 'handoff-1'),
+      edge('e5', 'handoff-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const afterQuestion = prepareWorkflowTurn(state!, '12345678900');
+    expect(afterQuestion.mode).toBe('tool_pending');
+
+    const pendingNode = afterQuestion.state.nodes.find((n) => n.id === afterQuestion.state.currentNodeId)!;
+    const resumed = await resumeAfterTool(afterQuestion.state, pendingNode);
+
+    expect(resumed.mode).toBe('transfer');
+    expect(resumed.shouldEnd).toBe(false);
+    expect(resumed.transferDetails?.to).toBe('+5511966665555');
+    expect(resumed.state.currentNodeId).toBe('handoff-1');
   });
 });
