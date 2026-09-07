@@ -6,6 +6,11 @@ export interface SessionUser {
   email: string;
   role: string;
   tenantId: string;
+  // Permissions computed live by the server (GET /api/auth/me), never fabricated on the client.
+  // Optional because older cached sessions/tests may not carry it; treat absence as "no permissions
+  // known", not as "all denied" or "all allowed" — callers should check via
+  // `user.permissions?.includes('some:permission')`.
+  permissions?: string[];
 }
 
 export type SessionStatus = 'idle' | 'loading' | 'authenticated' | 'unauthenticated';
@@ -76,7 +81,13 @@ export const useSessionStore = create<SessionState>((set) => ({
       }
       const data = await res.json();
       const user: SessionUser | null = data?.user
-        ? { id: data.user.id, email: data.user.email, role: data.user.role, tenantId: data.user.tenantId }
+        ? {
+            id: data.user.id,
+            email: data.user.email,
+            role: data.user.role,
+            tenantId: data.user.tenantId,
+            permissions: data.user.permissions,
+          }
         : null;
       set({ user, sessionStatus: user ? 'authenticated' : 'unauthenticated' });
       return user;

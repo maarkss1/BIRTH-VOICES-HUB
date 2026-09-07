@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime e Gateway de IA)
 - Para: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Onda: 2
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -69,3 +69,38 @@ resolvido) **pulam** a checagem de consentimento propositalmente — não há te
 consentir. Isso preserva o comportamento atual de produção sem regressão até que o Agente 05
 propague `tenantId` real; a partir daí, o gate de consentimento passa a valer para essas chamadas
 também. Ver esse handoff (que reabri/atualizei com prioridade elevada por causa desta dependência).
+
+## Resolução
+
+Adicionado o model dedicado exatamente como recomendado, com migração real aplicada
+(prisma/migrations/20260906150753_add_tenant_ai_consent/migration.sql, gerada via
+`prisma migrate dev` contra um Postgres local, aplicada com sucesso sobre um banco com tenants já
+existentes — nenhum dado perdido, `granted: false` é o default seguro para linhas ausentes):
+
+```prisma
+model TenantAiConsent {
+  id              String    @id @default(uuid())
+  tenantId        String    @unique
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  granted         Boolean   @default(false)
+  consentVersion  String?
+  grantedAt       DateTime?
+  revokedAt       DateTime?
+  grantedByUserId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([tenantId])
+}
+```
+
+`Tenant.aiConsent TenantAiConsent?` foi adicionado como o lado inverso da relação 1:1
+(`tenantId` é `@unique`).
+
+**Não alterei `src/services/settingService.ts`** — por acordo do próprio pedido original ("Ao
+migrar, settingService... podem ser atualizados", domínio do Agente 04), a migração do
+`getAiConsent`/`grantAiConsent`/`revokeAiConsent` do `Setting` genérico para este novo model fica
+para o Agente 04, preservando a mesma assinatura pública (nenhuma mudança necessária em
+`LLMGateway.ts`, `SessionManager.ts` ou `ai.controller.ts`).
+
+Ver `.agents/handoffs/onda-4/01-para-04-tenant-ai-consent-model-pronto.md` para os detalhes de
+consumo.

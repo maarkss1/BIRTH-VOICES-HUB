@@ -1,7 +1,7 @@
 - De: Agente 00 (Coordenador)
 - Para: Agente 08 (QA, Testes e Segurança)
 - Onda: 1
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -86,3 +86,14 @@ describe('AtlasGR webhook is reachable without an Origin header', () => {
   });
 });
 ```
+
+## Resolução
+
+Onda 3, Agente 08. Criado `__tests__/csrfProtection.test.ts` cobrindo os 4 casos unitários pedidos
+(rejeita mutação sem Origin/sem Bearer em produção; permite Bearer sem Origin em produção; rejeita
+Origin divergente de Host em produção; permite Origin == Host) mais um quinto caso (métodos não
+mutantes como GET nunca são tocados pelo middleware), e o caso de integração via
+`appPromise`/`supertest`: `POST /api/webhook/atlasgr/outbound` nunca retorna a mensagem de erro de
+CSRF, com ou sem `Origin` presente (a rejeição observada é a de autenticação do webhook — segredo
+ausente —, não a de CSRF, confirmando que a rota está de fato alcançável antes do middleware).
+6/6 testes verdes (`npx vitest run __tests__/csrfProtection.test.ts`); typecheck e lint limpos.

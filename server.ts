@@ -18,6 +18,8 @@ import { verifyToken } from "./src/lib/auth-tokens.js";
 import { getRedisUrl } from "./src/lib/env.js";
 import { runWithRequestId } from "./src/lib/requestContext.js";
 import { csrfProtection } from "./src/middlewares/index.js";
+import { createRateLimiter } from "./src/middlewares/rateLimit.js";
+import { hasPermission } from "./src/middlewares/rbac.js";
 import { createHealthRouter } from "./src/routes/health.routes.js";
 import apiRoutes from "./src/routes/index.js";
 import telephonyRoutes from "./src/routes/telephony.routes.js";
@@ -25,6 +27,8 @@ import atlasgrRoutes from "./src/features/prospecting/routes/atlasgr.routes.js";
 import { otelCollector } from "./lib/voice-runtime/otel.js";
 import { logger } from "./src/lib/logger.js";
 import { startWebhookWorker } from "./src/services/webhook.worker.js";
+import { startRetentionScheduler } from "./src/services/retentionScheduler.js";
+import { startSlaScheduler } from "./src/services/slaScheduler.js";
 import fs from "fs";
 import swaggerUi from "swagger-ui-express";
 import yaml from "yaml";
@@ -122,25 +126,6 @@ async function startServer() {
   const redisClient = new Redis(redisUrl, { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
   redisClient.on('error', (err) => logger.error('Redis client error', err.message));
 
-  const createRateLimiter = (keyPrefix: string, limit: number, windowSeconds: number) =>
-    async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-      const ip = req.ip || (req.headers['x-forwarded-for'] as string) || 'unknown';
-      const key = `ratelimit:${keyPrefix}:${ip}`;
-
-      try {
-        const current = await redisClient.incr(key);
-        if (current === 1) {
-          await redisClient.expire(key, windowSeconds);
-        }
-        if (current > limit) {
-          return res.status(429).json({ error: "Limite de requisições excedido. Tente novamente em um minuto." });
-        }
-        next();
-      } catch {
-        next();
-      }
-    };
-
   // General limiter for the whole API, applied before body parsing so an oversized/malformed
   // body never gets parsed for a request that's about to be rejected anyway.
   app.use(createRateLimiter('global', 200, 60));
@@ -196,8 +181,20 @@ async function startServer() {
     next();
   });
 
+  // Room key for a watched call: scoped by tenant AND session, so a broadcast (intervention,
+  // future real telemetry) can never reach a socket outside the tenant/session it belongs to,
+  // even if two tenants happen to reuse the same sessionId. See handoff
+  // 11-para-00-socketio-tenant-rbac-audit.md (Agente 11 -> Coordenador) — this closes it.
+  const watchRoom = (tenantId: string, sessionId: string) => `watch:${tenantId}:${sessionId}`;
+
   io.on("connection", (socket) => {
     logger.info('Supervisor connected via WebSocket', socket.id);
+
+    socket.on("watch_session", (data: { sessionId?: string }) => {
+      const sessionId = data?.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) return;
+      socket.join(watchRoom(socket.data.user.tenantId, sessionId));
+    });
 
     let demoInterval: NodeJS.Timeout | undefined;
     if (demoTelemetryEnabled) {
@@ -245,9 +242,28 @@ async function startServer() {
       }, 1000);
     }
 
-    socket.on("intervene_call", (data) => {
-      logger.info('Intervention received from supervisor', data);
-      io.emit("intervention_triggered", { message: "Supervisor interveio na chamada!" });
+    socket.on("intervene_call", async (data: { sessionId?: string }) => {
+      const allowed = await hasPermission(socket.data.user, 'supervision:intervene');
+      if (!allowed) {
+        logger.warn('Intervention rejected: permission denied', { role: socket.data.user?.role, userId: socket.data.user?.id });
+        socket.emit("intervention_error", { message: "Sem permissão para intervir nesta chamada." });
+        return;
+      }
+      const sessionId = data?.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) {
+        logger.warn('Intervention rejected: missing sessionId', { userId: socket.data.user?.id });
+        socket.emit("intervention_error", { message: "sessionId ausente na solicitação de intervenção." });
+        return;
+      }
+      const room = watchRoom(socket.data.user.tenantId, sessionId);
+      logger.info('Intervention received from supervisor', { sessionId, userId: socket.data.user?.id, tenantId: socket.data.user?.tenantId });
+      // Scoped to the tenant+session room, never io.emit — a global broadcast would leak this
+      // event to every connected socket across every tenant regardless of which call it concerns.
+      io.to(room).emit("intervention_triggered", {
+        sessionId,
+        by: socket.data.user?.email,
+        at: Date.now(),
+      });
     });
 
     socket.on("disconnect", () => {
@@ -286,6 +302,8 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'test') {
     startWebhookWorker();
+    startRetentionScheduler();
+    startSlaScheduler();
     server.listen(PORT, "0.0.0.0", () => {
       logger.info(`Server running on http://localhost:${PORT}`);
     });

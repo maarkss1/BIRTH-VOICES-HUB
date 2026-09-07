@@ -23,6 +23,11 @@ env:
   ALLOWED_ORIGINS: "http://127.0.0.1:3000,http://localhost:3000"
   JWT_SECRET: "ci_jwt_secret_do_not_use_in_production"
   REFRESH_TOKEN_SECRET: "ci_refresh_secret_do_not_use_in_production"
+  # Lets e2e/atlasgr-webhook.spec.ts exercise the real signature-check path (missing/wrong secret
+  # -> 401) instead of the "integration not configured" fallback (-> 503) — matching what a real
+  # deployment (which does have this configured) actually enforces. Not a real secret; CI never
+  # talks to the real AtlasGR CRM.
+  ATLASGR_WEBHOOK_SECRET: "ci_atlasgr_webhook_secret_do_not_use_in_production"
   NODE_ENV: "test"
 
 jobs:
@@ -63,6 +68,14 @@ jobs:
 
     - name: Install Dependencies
       run: npm ci
+
+    # Scoped to the root workspace's production dependency tree (--workspaces=false), matching
+    # exactly what ships in the Docker image (see Dockerfile: only the root package is installed
+    # with --omit=dev; packages/sip-agent is a non-deployed PoC workspace, never copied into the
+    # image — see docs/AUDIT.md §2/§3.4). Auditing the full workspace tree here would fail CI on
+    # sip-agent's adm-zip/onnxruntime-node advisories even though nothing ships them.
+    - name: Audit production dependencies (high severity)
+      run: npm audit --omit=dev --audit-level=high --workspaces=false
 
     - name: Prisma Generate
       run: npx prisma generate
@@ -113,3 +126,58 @@ jobs:
 
     - name: Build Docker Image
       run: docker build -t birthvoices-app:${{ github.sha }} .
+
+    # The image build succeeding is not proof the image actually runs — Alpine/Prisma engine
+    # mismatches, missing runtime files from the multi-stage copy, or a broken CMD only surface
+    # once the container is actually started. Run it for real and hit the same /health endpoint
+    # Cloud Run's own health check calls (see Dockerfile HEALTHCHECK), failing the job if it
+    # never comes up healthy.
+    - name: Start container and verify /health
+      run: |
+        set -e
+        # NODE_ENV=production, not "test": server.ts only calls server.listen() (and starts the
+        # webhook worker / schedulers) when NODE_ENV !== 'test' — that guard exists so `vitest`
+        # (which imports `appPromise` directly, never over HTTP) doesn't bind a real port or start
+        # background workers. A smoke test that actually curls the container over HTTP needs the
+        # real listening server, i.e. the same NODE_ENV Cloud Run itself runs with (see deploy.yml).
+        docker run -d --name ci-smoke -p 3000:3000 \
+          -e NODE_ENV=production \
+          -e PORT=3000 \
+          -e DATABASE_URL="postgresql://devuser:devpassword@localhost:5432/birthvoices" \
+          -e REDIS_URL="redis://localhost:6379" \
+          -e JWT_SECRET="ci_jwt_secret_do_not_use_in_production" \
+          -e REFRESH_TOKEN_SECRET="ci_refresh_secret_do_not_use_in_production" \
+          -e ALLOWED_ORIGINS="http://127.0.0.1:3000,http://localhost:3000" \
+          birthvoices-app:${{ github.sha }}
+
+        echo "Waiting for container to report healthy (Dockerfile HEALTHCHECK)..."
+        for i in $(seq 1 40); do
+          status="$(docker inspect --format='{{.State.Health.Status}}' ci-smoke 2>/dev/null || echo 'starting')"
+          echo "  [$i/40] health status: $status"
+          if [ "$status" = "healthy" ]; then
+            break
+          fi
+          if [ "$status" = "unhealthy" ]; then
+            echo "::error::Container reported unhealthy."
+            docker logs ci-smoke || true
+            exit 1
+          fi
+          sleep 2
+        done
+
+        if [ "$status" != "healthy" ]; then
+          echo "::error::Container never became healthy within timeout."
+          docker logs ci-smoke || true
+          exit 1
+        fi
+
+        echo "Hitting /health directly as an extra check..."
+        curl --fail --show-error --silent http://127.0.0.1:3000/health
+
+    - name: Dump container logs
+      if: always()
+      run: docker logs ci-smoke || true
+
+    - name: Stop and remove smoke test container
+      if: always()
+      run: docker rm -f ci-smoke || true

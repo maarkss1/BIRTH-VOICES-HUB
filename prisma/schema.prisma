@@ -9,51 +9,57 @@ datasource db {
 }
 
 model Tenant {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users         User[]
-  memberships   Membership[]
-  roles         Role[]
-  workflows     Workflow[]
-  callLogs      CallLog[]
-  metrics       Metric[]
-  sessions      Session[]
-  agents        Agent[]
-  auditLogs     AuditLog[]
-  settings      Setting[]
+  users              User[]
+  memberships        Membership[]
+  roles              Role[]
+  workflows          Workflow[]
+  callLogs           CallLog[]
+  metrics            Metric[]
+  sessions           Session[]
+  agents             Agent[]
+  auditLogs          AuditLog[]
+  settings           Setting[]
+  aiConsent          TenantAiConsent?
+  atlasGRCallResults AtlasGRCallResult[]
+  wallet             Wallet?
+  transactions       Transaction[]
+  apiKeys            APIKey[]
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
+  id           String    @id @default(uuid())
+  email        String    @unique
   passwordHash String
   companyName  String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
 
-  tenantId     String?
-  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id])
 
-  memberships  Membership[]
-  sessions     Session[]
-  auditLogs    AuditLog[]
+  memberships    Membership[]
+  sessions       Session[]
+  auditLogs      AuditLog[]
+  createdApiKeys APIKey[]
 
   @@index([tenantId])
 }
 
 model Membership {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  roleId    String
-  role      Role     @relation(fields: [roleId], references: [id])
+  id       String @id @default(uuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roleId   String
+  role     Role   @relation(fields: [roleId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -64,65 +70,65 @@ model Membership {
 }
 
 model Role {
-  id          String   @id @default(uuid())
+  id          String  @id @default(uuid())
   name        String
   description String?
-  tenantId    String?  // Null for system roles, populated for custom roles
-  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId    String? // Null for system roles, populated for custom roles
+  tenant      Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   permissions Permission[] @relation("RolePermissions")
   memberships Membership[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([tenantId])
 }
 
 model Permission {
-  id          String   @id @default(uuid())
-  name        String   @unique
+  id          String  @id @default(uuid())
+  name        String  @unique
   description String?
 
-  roles       Role[]   @relation("RolePermissions")
+  roles Role[] @relation("RolePermissions")
 }
 
 model Workflow {
-  id          String   @id @default(uuid())
+  id          String  @id @default(uuid())
   tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId      String?
   name        String
   description String?
-  version     Int      @default(1)
-  status      String   @default("draft")
-  nodes       Json     @default("[]")
-  edges       Json     @default("[]")
-  metadata    Json     @default("{}")
+  version     Int     @default(1)
+  status      String  @default("draft")
+  nodes       Json    @default("[]")
+  edges       Json    @default("[]")
+  metadata    Json    @default("{}")
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
-  createdBy   String?
-  updatedBy   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  createdBy String?
+  updatedBy String?
 
   @@index([tenantId])
   @@index([userId])
 }
 
 model Session {
-  id        String   @id @default(uuid())
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  agentId   String?
-  channel   String
-  status    String   @default("active")
-  metadata  Json     @default("{}")
+  id       String  @id @default(uuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  agentId  String?
+  channel  String
+  status   String  @default("active")
+  metadata Json    @default("{}")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   @@index([tenantId])
@@ -144,18 +150,18 @@ model AuditLog {
 }
 
 model Agent {
-  id            String   @id @default(uuid())
+  id            String  @id @default(uuid())
   tenantId      String
-  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant        Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId        String?
   name          String
   model         String
-  configuration Json     @default("{}")
-  phoneNumber   String?  @unique
+  configuration Json    @default("{}")
+  phoneNumber   String? @unique
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  deletedAt     DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   @@index([tenantId])
   @@index([userId])
@@ -192,13 +198,13 @@ model Metric {
 }
 
 model Setting {
-  id        String   @id @default(uuid())
-  tenantId  String?
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId    String?
-  key       String
-  value     Json
-  isGlobal  Boolean  @default(false)
+  id       String  @id @default(uuid())
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId   String?
+  key      String
+  value    Json
+  isGlobal Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -208,32 +214,108 @@ model Setting {
   @@index([userId])
 }
 
-// SECURITY.md states every model except "core global models" carries a tenantId. APIKey and
-// Integration break that invariant today. They are currently dead schema — grep finds zero
-// references to `prisma.aPIKey` / `prisma.integration` anywhere in src/ or lib/ — so there is no
-// live cross-tenant leak yet. But both are clearly meant to hold tenant-owned data (a tenant's own
-// API key, a tenant's configured provider credentials per AGENTS.md's Agent 06/Integrations scope)
-// once wired up. Whichever agent implements them MUST add a required `tenantId` (with the same
-// `@relation(fields: [tenantId], references: [id], onDelete: Cascade)` + `@@index([tenantId])`
-// shape used by every other tenant-scoped model above) as part of that work — not bolt it on after
-// the first cross-tenant report. Flagged by Agent 01 (schema owner) during the Onda 1 tenancy
-// audit; not fixed preemptively here because the correct shape (nullable vs required, one row per
-// tenant vs many) depends on product decisions those agents haven't made yet.
-model APIKey {
-  id        String   @id @default(uuid())
-  keyHash   String   @unique
-  name      String
-  scopes    Json     @default("[]")
+// First-class LGPD consent record: whether this tenant has authorized sending its data (contact
+// info, call transcripts) to an external AI provider (OpenAI/Anthropic/Gemini/ElevenLabs) via
+// LLMGateway. Resolves .agents/handoffs/onda-2/04-para-01-ai-consent-schema.md — Agente 04
+// (owner of lib/voice-runtime/**) had been enforcing this via the generic `Setting` table
+// (key `ai_provider_consent`) as a real, working, tenant-isolated interim mechanism; this model
+// is the dedicated, discoverable (via `prisma studio`/schema) replacement with proper audit
+// columns. `settingService.ts` (Agente 04's own file) is expected to switch its
+// getAiConsent/grantAiConsent/revokeAiConsent implementation to this model — its public signature
+// does not need to change, so LLMGateway.ts/SessionManager.ts/ai.controller.ts (its callers) do
+// not need to change either. One row per tenant (`tenantId` is unique): `granted: false` is the
+// safe default for a brand-new tenant (fail closed, no regression vs. "no Setting row" today).
+model TenantAiConsent {
+  id              String    @id @default(uuid())
+  tenantId        String    @unique
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  granted         Boolean   @default(false)
+  consentVersion  String?
+  grantedAt       DateTime?
+  revokedAt       DateTime?
+  grantedByUserId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  expiresAt DateTime?
+
+  @@index([tenantId])
+}
+
+// SECURITY.md states every model except "core global models" carries a tenantId. Integration
+// still breaks that invariant today (dead schema — grep finds zero references to
+// `prisma.integration` anywhere in src/ or lib/), left for whichever agent (06) wires it up, per
+// the same note that used to cover APIKey here. APIKey itself was fixed as part of implementing
+// its real backend (.agents/handoffs/onda-2/02-para-09-api-key-backend.md via
+// .agents/handoffs/onda-4/09-para-00-api-key-backend-fora-de-escopo.md): it now carries a required
+// `tenantId` with the same `@relation(..., onDelete: Cascade)` + `@@index([tenantId])` shape used
+// by every other tenant-scoped model above, plus `createdByUserId` (the admin who issued it,
+// SetNull on user deletion so a key survives its issuer being removed), `lastUsedAt` (updated on
+// every successful authentication, for the "last used" column in the UI) and `revokedAt`
+// (non-null = immediately rejected by the API-key auth middleware, checked live on every request —
+// no cache, so revocation takes effect immediately per the LGPD/security requirement that a leaked
+// or retired key stop working without delay).
+// Persists the result callback Bland AI posts back once a call dispatched via the AtlasGR
+// prospecting integration finishes (`POST /api/webhooks/bland/:token`,
+// src/features/prospecting/routes/atlasgr.routes.ts — Agente 06's domain). Before this model the
+// handler only logged `callId`/`status` via `logger.info`; there was no durable, queryable record
+// answering "how many calls did AtlasGR trigger this period and what was each one's outcome".
+// Resolves .agents/handoffs/onda-1/06-para-01-persistir-resultado-bland.md.
+//
+// `tenantId` decision (product question raised in that handoff, decided pragmatically by Agente
+// 01): this integration is NOT multi-tenant today.
+// `VoiceProspectingService.triggerOutboundCall` (Agente 06,
+// src/features/prospecting/services/voice.service.ts) already maps every outbound call to exactly
+// one tenant via the `ATLASGR_TENANT_ID` env var, but that identifier is (a) never sent to Bland AI
+// as call metadata and (b) never present in Bland's result callback payload — the callback body only
+// carries `call_id`/`status`/transcript/etc, nothing tenant-scoped. Defaulting every row to whatever
+// `ATLASGR_TENANT_ID` happens to resolve to *at callback time* would be a fabricated association: it
+// could silently misattribute a result if that env var is ever rotated between the outbound call and
+// the inbound callback, and there is no signal in the callback itself to verify it. Rather than
+// invent that link, `tenantId` is OPTIONAL — a null value accurately reflects "this integration has
+// no verifiable per-call tenant signal today", not a bug. The caller persisting a row MAY still pass
+// `process.env.ATLASGR_TENANT_ID` as a best-effort label when present; that is a caller-side choice,
+// not something this model requires. Revisit once AtlasGR sends a stable tenant/account identifier
+// that round-trips through Bland's webhook (e.g. via `request_data`/`metadata` on the outbound call).
+model AtlasGRCallResult {
+  id         String   @id @default(uuid())
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  leadId     String?
+  callId     String   @unique
+  status     String?
+  completed  Boolean?
+  callLength Float?
+  receivedAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([leadId])
+}
+
+model APIKey {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  keyHash  String @unique
+  name     String
+  scopes   Json   @default("[]")
+
+  createdByUserId String?
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([tenantId])
+  @@index([createdByUserId])
 }
 
 model Integration {
-  id        String   @id @default(uuid())
-  provider  String
-  config    Json     @default("{}")
+  id       String @id @default(uuid())
+  provider String
+  config   Json   @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -245,11 +327,11 @@ model Integration {
 // per-user queries elsewhere in this schema. Currently unused (zero references to
 // `prisma.notification` in src/) — noted for whichever agent wires it up.
 model Notification {
-  id        String   @id @default(uuid())
-  userId    String
-  title     String
-  message   String
-  isRead    Boolean  @default(false)
+  id      String  @id @default(uuid())
+  userId  String
+  title   String
+  message String
+  isRead  Boolean @default(false)
 
   createdAt DateTime @default(now())
 }
@@ -260,11 +342,77 @@ model Notification {
 // lib/voice-runtime/). Agent 04 owns lib/voice-runtime/** — resolve the intended shape with a
 // handoff to Agent 01 before writing to this model for the first time.
 model AIProvider {
-  id        String   @id @default(uuid())
-  name      String
-  config    Json     @default("{}")
-  isActive  Boolean  @default(true)
+  id       String  @id @default(uuid())
+  name     String
+  config   Json    @default("{}")
+  isActive Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Global catalog of purchasable plans (Agente 12 — Growth, Billing e Monetização de Uso). Not
+// tenant-scoped — every tenant sees the same catalog (per-tenant custom pricing is out of scope
+// for this pass). Requested via
+// .agents/handoffs/onda-4/12-para-01-schema-billing-monetizacao.md — mirrors billingService.ts's
+// `PlanOption` interface field for field.
+model Plan {
+  id              String   @id @default(uuid())
+  slug            String   @unique
+  name            String
+  priceCents      Int
+  currency        String   @default("BRL")
+  billingInterval String // "monthly" | "yearly"
+  active          Boolean  @default(true)
+  wallets         Wallet[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// One row per tenant — same shape as TenantAiConsent (tenantId @unique). balanceCents is always an
+// integer number of cents (never a float) so real money never accumulates rounding error. Mirrors
+// billingService.ts's `WalletSummary` interface (joined with `plan` for planName/billingInterval).
+model Wallet {
+  id               String        @id @default(uuid())
+  tenantId         String        @unique
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  balanceCents     Int           @default(0)
+  currency         String        @default("BRL")
+  planId           String?
+  plan             Plan?         @relation(fields: [planId], references: [id])
+  planStatus       String        @default("inactive") // 'inactive'|'active'|'past_due'|'canceled'|'trialing'
+  currentPeriodEnd DateTime?
+  transactions     Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([planId])
+}
+
+// idempotencyKey is @unique and REQUIRED (not optional) — AGENTS.md §9 item 16 treats duplicate
+// charging with the same severity class as item 11 (webhook replay), now applied to real customer
+// money instead of a real call to a lead. tenantId is denormalized (in addition to the walletId
+// relation), with its own FK + cascade, so paginated tenant transaction history never needs a join
+// through Wallet — same "tenantId directly on the event row" shape already used by Metric. Mirrors
+// billingService.ts's `TransactionSummary`/`RecordTransactionInput` interfaces.
+model Transaction {
+  id                String   @id @default(uuid())
+  walletId          String
+  wallet            Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type              String
+  amountCents       Int // signed: positive = credit, negative = debit
+  balanceAfterCents Int
+  status            String
+  description       String?
+  externalReference String? // e.g. the payment gateway's own transaction id (Stripe), if any
+  idempotencyKey    String   @unique
+  createdAt         DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([walletId])
 }

@@ -20,9 +20,10 @@ Authorization: Bearer <your_token>
 
 For comprehensive details on endpoints, request parameters, response schemas, and examples, please consult the generated specifications:
 
-- [OpenAPI Specification (docs/api/openapi.yaml)](./docs/api/openapi.yaml)
+- [OpenAPI Specification (docs/api/openapi.yaml)](./docs/api/openapi.yaml) — the source of truth; audited directly against `src/routes/**`.
 - [Postman Collection (docs/api/postman_collection.json)](./docs/api/postman_collection.json)
 - [Insomnia Workspace (docs/api/insomnia_workspace.json)](./docs/api/insomnia_workspace.json)
+- [TypeScript SDK (packages/sdk/)](./packages/sdk) — generated from the OpenAPI spec above, see [docs/sdk/index.md](./docs/sdk/index.md).
 
 ## Rate Limiting
 

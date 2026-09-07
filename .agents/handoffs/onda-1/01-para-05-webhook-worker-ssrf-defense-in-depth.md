@@ -1,7 +1,7 @@
 - De: Agente 01 (Plataforma, Segurança, Tenancy e Dados)
 - Para: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Onda: 1
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -49,3 +49,48 @@ que pode ser reaproveitada/extraída para um módulo compartilhado se fizer sent
 Nota: a checagem atual é só de IP literal, não resolve DNS — um hostname público que resolva para
 IP privado no momento da requisição ainda não é bloqueado (limitação documentada no próprio
 comentário do validador).
+
+## Resolução
+
+Ainda estava `Status: aberto` na Onda 3 (achado de Onda 1 nunca implementado); resolvido nesta
+remediação em vez de deixado para uma futura Onda.
+
+Implementada a defesa em profundidade sugerida, reaproveitando a lógica existente em vez de
+duplicá-la:
+
+1. `src/validators/index.ts`: `isPrivateOrReservedHost` passou de função privada do módulo para
+   `export function` (nenhuma mudança de lógica/assinatura) — este arquivo não tem dono exclusivo
+   listado em `AGENTS.md` §11, então a exportação é uma edição aditiva de baixo risco, sem
+   modificar `callbackUrlSchema` nem qualquer comportamento de validação de entrada existente.
+2. `src/services/webhook.worker.ts` (meu, Agente 05): antes do `fetch(url, ...)`, uma nova função
+   `isSafeWebhookUrl` reaplica exatamente a mesma checagem de protocolo (HTTPS, ou HTTP fora de
+   produção — igual ao `callbackUrlSchema`) e host privado/reservado usada na entrada, agora também
+   no ponto de saída do worker. Se a URL do job não passar, o worker lança `UnrecoverableError`
+   (import de `bullmq`) em vez do `Error` genérico — isso instrui o BullMQ a falhar o job
+   imediatamente sem consumir o orçamento de `attempts`/backoff, já que um alvo bloqueado por
+   política nunca vai começar a funcionar numa retentativa.
+
+Isso cobre o vetor que a validação de entrada sozinha não cobre: `job.data.url` pode vir de
+`WEBHOOK_URL`/`TEST_WEBHOOK_URL` (variáveis de ambiente, nunca passam pelo Zod schema) e, no futuro,
+de um `Webhook` model por tenant (TODO já existente em `webhook.service.ts`) configurado por outro
+endpoint que também pode não usar `callbackUrlSchema`. A checagem em `webhook.worker.ts` não
+depende de o chamador ter validado nada antes.
+
+Limitação herdada e ainda válida (documentada no próprio `isPrivateOrReservedHost`): é uma checagem
+de IP literal, sem resolução de DNS — um hostname público que resolva para IP privado só no momento
+da requisição (DNS rebinding) não é bloqueado por esta camada. Não tratado nesta remediação por
+estar fora do achado original e exigiria um proxy de egress/allowlist de rede, decisão de
+infraestrutura fora do escopo do Agente 05.
+
+Teste esperado pelo handoff original (enfileirar job com `url: 'http://169.254.169.254/...'`
+diretamente, bypassando o schema de entrada, e confirmar que o worker recusa) foi verificado por
+leitura de código/tipo (não adicionei teste automatizado novo porque `__tests__/**` é propriedade
+exclusiva do Agente 08 — AGENTS.md §11 — e não havia teste pré-existente de `webhook.worker.ts` para
+estender sem invadir esse domínio). Registrando aqui para o Agente 08 adicionar cobertura formal se
+desejar.
+
+Validação:
+- `npm run typecheck` — verde.
+- `npm run lint` — verde (0 erros).
+- `npm run test` — 333 passed | 1 skipped (52 arquivos); nenhum teste existente quebrou.
+- `npm run build` — verde.

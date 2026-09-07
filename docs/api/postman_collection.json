@@ -31,16 +31,35 @@
       "name": "Workflows",
       "item": [
         {
-          "name": "List Workflows",
+          "name": "Get Workflow",
           "request": {
             "method": "GET",
             "header": [
               { "key": "Authorization", "value": "Bearer {{token}}" }
             ],
             "url": {
-              "raw": "{{baseUrl}}/workflows",
+              "raw": "{{baseUrl}}/workflow",
               "host": ["{{baseUrl}}"],
-              "path": ["workflows"]
+              "path": ["workflow"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Agents",
+      "item": [
+        {
+          "name": "List Agents",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/agents",
+              "host": ["{{baseUrl}}"],
+              "path": ["agents"]
             }
           }
         }

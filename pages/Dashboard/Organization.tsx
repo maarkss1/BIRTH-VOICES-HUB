@@ -1,14 +1,38 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Save, Upload, Shield, Video, Loader2, AlertTriangle, Lock } from 'lucide-react';
 import { useSessionStore } from '../../store/useSessionStore';
 import { logger } from '../../lib/logger';
-import { Badge, EmptyState, Skeleton } from '../../components/design-system';
+import { Badge, Button, EmptyState, Skeleton, Table, TableHead, TableRow, TableCell } from '../../components/design-system';
 
 interface TenantUser {
   id: string;
   email: string;
   role: string;
 }
+
+interface AuditLogEntry {
+  id: string;
+  userId: string;
+  actorEmail: string | null;
+  action: string;
+  details: unknown;
+  timestamp: string;
+}
+
+interface AuditLogPage {
+  items: AuditLogEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+type AuditLogState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; data: AuditLogPage };
+
+const AUDIT_LOG_PAGE_SIZE = 20;
 
 export default function OrganizationPage() {
   const [activeTab, setActiveTab] = useState('branding');
@@ -74,6 +98,38 @@ export default function OrganizationPage() {
         setMembersError(true);
       });
   }, [isAdmin]);
+
+  // Audit Log tab: GET /api/audit-log is admin-only server-side (403 otherwise), same gate as
+  // GET /api/users above. Real data from the backend (see
+  // .agents/handoffs/onda-4/01-para-02-audit-log-frontend.md) — replaces the honest "not
+  // available yet" EmptyState this tab used to show.
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditState, setAuditState] = useState<AuditLogState>({ status: 'loading' });
+
+  const fetchAuditLog = useCallback((page: number, onCancelled?: () => boolean) => {
+    setAuditState({ status: 'loading' });
+    fetch(`/api/audit-log?page=${page}&pageSize=${AUDIT_LOG_PAGE_SIZE}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: AuditLogPage) => {
+        if (onCancelled?.()) return;
+        setAuditState({ status: 'ready', data });
+      })
+      .catch((err) => {
+        if (onCancelled?.()) return;
+        logger.error('Failed to load audit log', { err });
+        setAuditState({ status: 'error' });
+      });
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'audit' || !isAdmin) return;
+    let cancelled = false;
+    fetchAuditLog(auditPage, () => cancelled);
+    return () => { cancelled = true; };
+  }, [activeTab, isAdmin, auditPage, fetchAuditLog]);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | undefined;
@@ -352,11 +408,97 @@ export default function OrganizationPage() {
                 )}
 
                 {activeTab === 'audit' && (
-                    <EmptyState
-                        icon={<Shield className="h-8 w-8" />}
-                        title="Consulta de auditoria ainda não disponível"
-                        description="Cada ação sensível já é registrada no servidor (AuditLog), mas ainda não existe um endpoint para listá-las nesta tela. Ver handoff 02-para-01-audit-log-listagem.md."
-                    />
+                    <div>
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="font-bold text-slate-800">Trilha de Auditoria</h3>
+                        </div>
+                        {!isAdmin ? (
+                            <EmptyState
+                                icon={<Lock className="h-8 w-8" />}
+                                title="Acesso restrito"
+                                description="A trilha de auditoria exige o papel de administrador nesta organização."
+                            />
+                        ) : auditState.status === 'loading' ? (
+                            <div className="space-y-3">
+                                <Skeleton className="h-10 w-full" />
+                                <Skeleton className="h-10 w-full" />
+                                <Skeleton className="h-10 w-full" />
+                            </div>
+                        ) : auditState.status === 'error' ? (
+                            <EmptyState
+                                icon={<AlertTriangle className="h-8 w-8" />}
+                                title="Não foi possível carregar a trilha de auditoria"
+                                description="Tente novamente em alguns instantes."
+                                action={<Button size="sm" variant="outline" onClick={() => fetchAuditLog(auditPage)}>Tentar novamente</Button>}
+                            />
+                        ) : auditState.data.items.length === 0 ? (
+                            <EmptyState
+                                icon={<Shield className="h-8 w-8" />}
+                                title="Nenhum evento de auditoria registrado"
+                                description="Assim que uma ação sensível ocorrer nesta organização, ela aparece aqui."
+                            />
+                        ) : (
+                            <div className="space-y-4">
+                                <Table>
+                                    <TableHead>
+                                        <TableRow>
+                                            <TableCell isHeader>Ação</TableCell>
+                                            <TableCell isHeader>Ator</TableCell>
+                                            <TableCell isHeader>Detalhes</TableCell>
+                                            <TableCell isHeader>Quando</TableCell>
+                                        </TableRow>
+                                    </TableHead>
+                                    <tbody>
+                                        {auditState.data.items.map((entry) => {
+                                            const hasDetails = entry.details && typeof entry.details === 'object'
+                                                ? Object.keys(entry.details as Record<string, unknown>).length > 0
+                                                : Boolean(entry.details);
+                                            const detailsText = hasDetails ? JSON.stringify(entry.details) : '—';
+                                            return (
+                                                <TableRow key={entry.id}>
+                                                    <TableCell className="font-mono text-xs font-semibold text-slate-800">
+                                                        {entry.action}
+                                                    </TableCell>
+                                                    <TableCell className="text-xs text-slate-600">
+                                                        {entry.actorEmail ?? <span className="text-slate-400 italic">removido/anonimizado</span>}
+                                                    </TableCell>
+                                                    <TableCell className="font-mono text-xs text-slate-500 max-w-xs">
+                                                        <span className="block truncate" title={detailsText}>{detailsText}</span>
+                                                    </TableCell>
+                                                    <TableCell className="text-xs text-slate-400 whitespace-nowrap">
+                                                        {new Date(entry.timestamp).toLocaleString('pt-BR')}
+                                                    </TableCell>
+                                                </TableRow>
+                                            );
+                                        })}
+                                    </tbody>
+                                </Table>
+                                <div className="flex items-center justify-between pt-2">
+                                    <span className="text-xs text-slate-500">
+                                        Página {auditState.data.page} de {auditState.data.totalPages} · {auditState.data.total} evento(s)
+                                    </span>
+                                    <div className="flex gap-2">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={auditState.data.page <= 1}
+                                            onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
+                                        >
+                                            Anterior
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={auditState.data.page >= auditState.data.totalPages}
+                                            onClick={() => setAuditPage((p) => p + 1)}
+                                        >
+                                            Próxima
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 )}
             </div>
         </div>

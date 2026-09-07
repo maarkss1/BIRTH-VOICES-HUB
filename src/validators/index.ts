@@ -41,13 +41,25 @@ export const createUserSchema = z.object({
   email: z.string().email('Formato de email inválido'),
   password: z.string().min(6, 'A senha precisa de no mínimo 6 caracteres'),
   companyName: z.string().optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['admin', 'user', 'supervisor']).optional(),
 });
 
 export const updateUserSchema = z.object({
   companyName: z.string().optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['admin', 'user', 'supervisor']).optional(),
   password: z.string().min(6).optional(),
+});
+
+// billing.controller.ts (Agente 12) — POST /api/billing/change-plan.
+export const changePlanSchema = z.object({
+  planId: z.string().min(1, 'planId é obrigatório'),
+  effectiveAt: z.enum(['immediate', 'next_cycle']).optional(),
+});
+
+// apiKey.controller.ts (Agente 01) — POST /api/developers/keys.
+export const createApiKeySchema = z.object({
+  name: z.string().min(1, 'Nome da chave é obrigatório').max(200, 'Nome da chave muito longo'),
+  expiresAt: z.string().datetime({ message: 'expiresAt deve ser uma data ISO 8601 válida' }).optional(),
 });
 
 export const agentSchema = z.object({
@@ -71,7 +83,11 @@ export const metricSchema = z.object({
 // literal-IP check only — it does not resolve DNS, so a public hostname that resolves to a
 // private address at request time is not caught here; tighten with an egress allowlist/proxy if
 // untrusted tenants ever get API access and this residual DNS-rebinding gap needs closing too.
-function isPrivateOrReservedHost(hostname: string): boolean {
+//
+// Exported so `webhook.worker.ts` (Agente 05) can apply the same check as defense-in-depth right
+// before the actual outbound fetch — see `.agents/handoffs/onda-1/01-para-05-webhook-worker-ssrf-defense-in-depth.md`.
+// A future `Webhook` model configured outside this Zod schema must not bypass this check.
+export function isPrivateOrReservedHost(hostname: string): boolean {
   // Node's URL.hostname keeps the brackets for IPv6 literals (e.g. "[::1]") — strip them so the
   // IPv6 branch below matches against the bare address.
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
