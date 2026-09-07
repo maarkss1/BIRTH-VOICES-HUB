@@ -88,13 +88,17 @@ describe('workflow publish production-runtime gate', () => {
   it('refuses a visually valid graph containing a node the phone runtime cannot execute', async () => {
     const nodes = [
       node('start-1', 'start'),
-      node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'voice-1' }),
+      // Onda 6: 'voice' itself became executable (Twilio-named-TTS MVP — see
+      // .agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md), so 'human_handoff' is now
+      // the example node this gate test uses — it still has no runtime bridge (see
+      // .agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md).
+      node('handoff-1', 'human_handoff', { department: 'vendas' }),
       node('prompt-1', 'prompt', { promptText: 'Atenda com objetividade.' }),
       node('end-1', 'end'),
     ];
     const edges = [
-      edge('e1', 'start-1', 'voice-1'),
-      edge('e2', 'voice-1', 'prompt-1'),
+      edge('e1', 'start-1', 'handoff-1'),
+      edge('e2', 'handoff-1', 'prompt-1'),
       edge('e3', 'prompt-1', 'end-1'),
     ];
     mockFind.mockResolvedValue(workflow(nodes, edges));
@@ -103,7 +107,7 @@ describe('workflow publish production-runtime gate', () => {
 
     expect(error).toBeInstanceOf(ValidationFailedError);
     expect((error as ValidationFailedError).issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-voice-1', type: 'error' }),
+      expect.objectContaining({ id: 'err-runtime-unsupported-handoff-1', type: 'error' }),
     ]));
     expect(mockUpsert).not.toHaveBeenCalledWith('tenant-1', 'user-1', 'wf-1', { status: 'active' });
   });

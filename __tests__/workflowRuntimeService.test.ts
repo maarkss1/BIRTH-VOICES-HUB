@@ -63,15 +63,19 @@ describe('workflowRuntimeService capability gate', () => {
   it('fails closed for Studio nodes that the production phone runtime cannot execute yet', () => {
     const nodes = [
       node('start-1', 'start'),
-      node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'voice-x' }),
+      // Onda 6: 'voice' itself became executable (Twilio-named-TTS MVP — see
+      // .agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md), so 'human_handoff' is now
+      // the example node this gate test uses — it still has no runtime bridge (see
+      // .agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md).
+      node('handoff-1', 'human_handoff', { department: 'vendas' }),
       node('end-1', 'end'),
     ];
-    const edges = [edge('e1', 'start-1', 'voice-1'), edge('e2', 'voice-1', 'end-1')];
+    const edges = [edge('e1', 'start-1', 'handoff-1'), edge('e2', 'handoff-1', 'end-1')];
 
     const issues = validateRuntimeCompatibility(nodes, edges);
 
     expect(issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-voice-1', type: 'error' }),
+      expect.objectContaining({ id: 'err-runtime-unsupported-handoff-1', type: 'error' }),
     ]));
   });
 

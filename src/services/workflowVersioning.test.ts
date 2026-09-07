@@ -85,19 +85,23 @@ function validGraph() {
   return { nodes, edges };
 }
 
-// Structurally valid but depends on a node the phone runtime does not execute today (`voice`) —
-// this is exactly the shape of graph a runtime-capability regression (or an old archived version
-// that used to be supported) looks like.
+// Structurally valid but depends on a node the phone runtime does not execute today
+// (`human_handoff`) — this is exactly the shape of graph a runtime-capability regression (or an
+// old archived version that used to be supported) looks like. Was `voice` through Onda 5; Onda 6
+// made `voice` itself executable (Twilio-named-TTS MVP — see
+// .agents/handoffs/onda-6/04-para-07-voice-node-fixture-desatualizada.md), so `human_handoff`
+// (still blocked, no runtime bridge — see
+// .agents/handoffs/onda-5/04-para-05-voice-human-handoff-design.md) is now the example.
 function runtimeIncompatibleGraph() {
   const nodes = [
     node('start-1', 'start'),
-    node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'voice-1' }),
+    node('handoff-1', 'human_handoff', { department: 'vendas' }),
     node('prompt-1', 'prompt', { promptText: 'Atenda com objetividade.' }),
     node('end-1', 'end'),
   ];
   const edges = [
-    edge('e1', 'start-1', 'voice-1'),
-    edge('e2', 'voice-1', 'prompt-1'),
+    edge('e1', 'start-1', 'handoff-1'),
+    edge('e2', 'handoff-1', 'prompt-1'),
     edge('e3', 'prompt-1', 'end-1'),
   ];
   return { nodes, edges };
@@ -329,7 +333,7 @@ describe('rollbackToVersion', () => {
 
     expect(error).toBeInstanceOf(ValidationFailedError);
     expect((error as ValidationFailedError).issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-voice-1', type: 'error' }),
+      expect.objectContaining({ id: 'err-runtime-unsupported-handoff-1', type: 'error' }),
     ]));
     expect(mockCreateVersion).not.toHaveBeenCalled();
     expect(mockUpsert).not.toHaveBeenCalled();
