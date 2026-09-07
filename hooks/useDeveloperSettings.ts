@@ -1,13 +1,24 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSessionStore } from '../store/useSessionStore';
+import { logger } from '../lib/logger';
 
-export interface ApiKey {
+// Real backend now exists for API Keys (.agents/handoffs/onda-4/01-para-02-api-key-endpoints-prontos.md):
+// POST/GET/DELETE /api/developers/keys, admin-only within the tenant (403 for other roles) — same
+// authorization level as GET /api/users and /api/billing/* (AGENTS.md §14/§15).
+export interface ApiKeyMetadata {
   id: string;
   name: string;
-  value: string;
-  maskedValue: string;
-  visible: boolean;
   createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revoked: boolean;
+  revokedAt: string | null;
 }
+
+type ApiKeysState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; data: ApiKeyMetadata[] };
 
 interface DialogConfirmState {
   title: string;
@@ -15,77 +26,120 @@ interface DialogConfirmState {
   onConfirm: () => void;
 }
 
+// The plaintext key exists in the frontend ONLY between a successful create response and the
+// admin dismissing this banner — never persisted to state that survives a refresh, never part of
+// ApiKeyMetadata, never shown again after dismissal (AGENTS.md §13: the backend itself never
+// returns it a second time, so there is nothing to re-fetch even if we wanted to).
+interface CreatedKeyReveal {
+  id: string;
+  name: string;
+  key: string;
+}
+
 interface WebhookLog {
   status: number;
   body: string;
 }
 
-// No backend API-key issuance exists yet (prisma has an unused `APIKey` model but no
-// route/controller/service reads or writes it — see handoff 02-para-09-api-key-backend.md).
-// Starting from an empty list — rather than two pre-seeded keys that looked exactly like real
-// live/test secret values sitting in source — avoids both (a) presenting fabricated credentials
-// as if issued by a real backend, and (b) a string shaped like a real secret living in the repo.
-const INITIAL_KEYS: ApiKey[] = [];
-
 export function useDeveloperSettings() {
-  const [keys, setKeys] = useState<ApiKey[]>(INITIAL_KEYS);
+  const sessionUser = useSessionStore((state) => state.user);
+  const isAdmin = sessionUser?.role === 'admin';
+
+  const [keysState, setKeysState] = useState<ApiKeysState>({ status: 'loading' });
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createdKeyReveal, setCreatedKeyReveal] = useState<CreatedKeyReveal | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [dialogConfirm, setDialogConfirm] = useState<DialogConfirmState | null>(null);
+
+  // Webhooks tab: no backend yet (.agents/handoffs/onda-4/01-para-00-webhooks-tenant-fora-de-escopo.md,
+  // still unowned) — state untouched from the Onda 2 mitigation, kept purely client-side/simulated.
   const [testWebhookModal, setTestWebhookModal] = useState<string | null>(null);
   const [webhookLog, setWebhookLog] = useState<WebhookLog | null>(null);
-  const [dialogConfirm, setDialogConfirm] = useState<DialogConfirmState | null>(null);
+
+  const fetchKeys = useCallback(() => {
+    if (!isAdmin) return;
+    setKeysState({ status: 'loading' });
+    fetch('/api/developers/keys')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: { apiKeys: ApiKeyMetadata[] }) => {
+        setKeysState({ status: 'ready', data: Array.isArray(data.apiKeys) ? data.apiKeys : [] });
+      })
+      .catch((err) => {
+        logger.error('Failed to load API keys', { err });
+        setKeysState({ status: 'error' });
+      });
+  }, [isAdmin]);
+
+  useEffect(() => {
+    fetchKeys();
+  }, [fetchKeys]);
 
   const handleTestWebhook = (e: React.FormEvent) => {
     e.preventDefault();
     setWebhookLog({
       status: 200,
-      body: JSON.stringify({ success: true, message: "Evento recebido com sucesso" }, null, 2)
+      body: JSON.stringify({ success: true, message: 'Evento recebido com sucesso' }, null, 2)
     });
   };
 
-  const handleCreateKey = (e: React.FormEvent) => {
+  const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newKeyName.trim()) return;
+    const name = newKeyName.trim();
+    if (!name) return;
 
-    const characters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const array = new Uint32Array(24);
-    if (typeof window !== 'undefined' && window.crypto) {
-      window.crypto.getRandomValues(array);
+    setIsCreating(true);
+    setCreateError(null);
+    try {
+      const res = await fetch('/api/developers/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // Shown once, in this response only — never fetchable again afterwards.
+      setCreatedKeyReveal({ id: data.apiKey.id, name: data.apiKey.name, key: data.key });
+      setNewKeyName('');
+      setShowCreateModal(false);
+      fetchKeys();
+    } catch (err) {
+      logger.error('Failed to create API key', { err });
+      setCreateError(err instanceof Error ? err.message : 'Não foi possível criar a chave de API.');
+    } finally {
+      setIsCreating(false);
     }
-    let randomString = '';
-    for (let i = 0; i < 24; i++) {
-      randomString += characters.charAt(array[i] % characters.length);
-    }
-    const isLive = newKeyName.toLowerCase().includes('live') || newKeyName.toLowerCase().includes('produção') || newKeyName.toLowerCase().includes('prod');
-    const token = `pk_${isLive ? 'live' : 'test'}_${randomString}xyz`;
-    const masked = `${token.slice(0, 8)}****************${token.slice(-3)}`;
-
-    const newKey: ApiKey = {
-      id: Date.now().toString(),
-      name: newKeyName,
-      value: token,
-      maskedValue: masked,
-      visible: false,
-      createdAt: new Date().toISOString().split('T')[0]
-    };
-
-    setKeys([...keys, newKey]);
-    setNewKeyName('');
-    setShowCreateModal(false);
   };
 
-  const toggleVisibility = (id: string) => {
-    setKeys(keys.map(k => k.id === id ? { ...k, visible: !k.visible } : k));
-  };
+  const dismissCreatedKeyReveal = () => setCreatedKeyReveal(null);
 
-  const handleRevokeKey = (id: string) => {
+  const handleRevokeKey = (id: string, name: string) => {
     setDialogConfirm({
       title: 'Revogar Chave de API',
-      message: 'Tem certeza de que deseja revogar esta chave de API? Quaisquer aplicações ou SDKs que utilizem esta chave deixarão de funcionar imediatamente.',
-      onConfirm: () => {
-        setKeys(keys.filter(k => k.id !== id));
+      message: `Tem certeza de que deseja revogar a chave "${name}"? Quaisquer aplicações ou SDKs que utilizem esta chave deixarão de funcionar imediatamente.`,
+      onConfirm: async () => {
         setDialogConfirm(null);
+        setRevokingId(id);
+        setRevokeError(null);
+        try {
+          const res = await fetch(`/api/developers/keys/${id}`, { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          fetchKeys();
+        } catch (err) {
+          logger.error('Failed to revoke API key', { err });
+          setRevokeError(err instanceof Error ? err.message : 'Não foi possível revogar a chave de API.');
+        } finally {
+          setRevokingId(null);
+        }
       }
     });
   };
@@ -93,18 +147,27 @@ export function useDeveloperSettings() {
   const handleCopy = (id: string, val: string) => {
     navigator.clipboard.writeText(val);
     setCopiedId(id);
-    requestAnimationFrame(() => {
-      setCopiedId(null);
-    });
+    setTimeout(() => {
+      setCopiedId((current) => (current === id ? null : current));
+    }, 2000);
   };
 
   return {
-    keys,
+    isAdmin,
+    keysState,
+    fetchKeys,
     copiedId,
     newKeyName,
     setNewKeyName,
     showCreateModal,
     setShowCreateModal,
+    isCreating,
+    createError,
+    setCreateError,
+    createdKeyReveal,
+    dismissCreatedKeyReveal,
+    revokingId,
+    revokeError,
     testWebhookModal,
     setTestWebhookModal,
     webhookLog,
@@ -113,7 +176,6 @@ export function useDeveloperSettings() {
     setDialogConfirm,
     handleTestWebhook,
     handleCreateKey,
-    toggleVisibility,
     handleRevokeKey,
     handleCopy,
   };
