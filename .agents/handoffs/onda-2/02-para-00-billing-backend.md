@@ -1,7 +1,7 @@
 - De: Agente 02 (Produto, Navegação e UX)
 - Para: Agente 00 (Coordenador) — para atribuir dono definitivo
 - Onda: 2
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -42,3 +42,15 @@ padronizados nesta onda.
 ## Contexto adicional
 Não é bloqueador de release — a tela antes mentia sobre estado financeiro, agora só admite que
 a funcionalidade ainda não existe. Nenhum dado real de pagamento foi tocado ou exposto.
+
+## Resolução
+
+Dono definitivo atribuído nesta onda: **Agente 12 (Growth, Billing e Monetização de Uso)**,
+especialista criado especificamente para este handoff e para `02-para-00-notificacoes-backend.md`
+(ver `AGENTS.md` §4 e `ROADMAP.md` → "Fase 6"). Schema real (`Plan`/`Wallet`/`Transaction`, Agente
+01) + `billingService.ts`/`billing.controller.ts`/`billing.routes.ts` reais (Agente 12) +
+`Billing.tsx` conectado ao dado real, com `recordTransaction` idempotente por `idempotencyKey`
+(constraint única, nunca duplica cobrança em redelivery). Integração de pagamento externo (Stripe
+ou equivalente) e proração completa de troca de plano seguem como itens futuros, documentados como
+limitação conhecida em `billingService.ts` — não bloqueiam o requisito mínimo deste handoff (saldo
+real por tenant + histórico de transações real).
