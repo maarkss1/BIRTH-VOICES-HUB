@@ -11,7 +11,7 @@ info:
     project's living technical-debt record. Endpoints that exist but are not yet functional (e.g.
     `POST /tts`) are documented as such rather than omitted, so a client integrating against this
     spec does not have to rediscover the gap at runtime.
-  version: 1.1.0
+  version: 1.2.0
 servers:
   - url: http://localhost:5001/api
     description: Local Development Server
@@ -191,6 +191,34 @@ components:
           format: date-time
         authorId:
           type: string
+
+    PublishedWorkflowVersion:
+      type: object
+      description: >
+        One archived entry of `Workflow.metadata.publishedVersions` — content that was actually
+        live at some point, appended only by `POST /workflow/publish` (archiving the version it
+        supersedes) and by `POST /workflow/{id}/versions/{version}/rollback` (archiving whatever
+        was live immediately before the rollback). Distinct from `WorkflowHistoryEntry`
+        (`GET /workflow/history`), which is the pre-existing per-save draft trail and includes
+        versions that were never actually published. `nodes`/`edges` are untyped for the same
+        reason as `Workflow` — see `docs/patterns/workflow-execution-contract.md`.
+      properties:
+        version:
+          type: integer
+        nodes:
+          type: array
+          items: {}
+        edges:
+          type: array
+          items: {}
+        metadata:
+          type: object
+        publishedAt:
+          type: string
+          format: date-time
+        publishedBy:
+          type: string
+          nullable: true
 
     Agent:
       type: object
@@ -379,6 +407,42 @@ components:
           format: date-time
           nullable: true
 
+    WebhookEndpointMetadata:
+      type: object
+      description: >
+        Shape returned by `GET /developers/webhooks` and nested in the `webhookEndpoint` field of
+        the create/regenerate-secret responses (though those two carry a narrower inline object —
+        see the `201`/`200` responses below — because `updatedAt`/`lastDeliveryAt`/
+        `lastDeliveryStatus` do not exist yet at creation/rotation time). Deliberately excludes
+        `secretHash` and the plaintext secret — see `src/repositories/webhookEndpointRepository.ts`,
+        which never selects a column that could leak either.
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types this endpoint receives (e.g. `["call.completed"]`), or `["*"]` for all.
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastDeliveryAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastDeliveryStatus:
+          type: string
+          nullable: true
+
     WalletSummary:
       type: object
       description: >
@@ -500,6 +564,7 @@ tags:
   - name: Users
   - name: AuditLog
   - name: ApiKeys
+  - name: WebhookEndpoints
   - name: Billing
   - name: Notifications
   - name: AI
@@ -874,6 +939,97 @@ paths:
           description: >
             The graph is well-formed JSON but fails validation (structural or runtime
             capability) — `issues` carries the verbatim `ValidationEngine` findings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflow/{id}/versions:
+    get:
+      tags: [Workflows]
+      summary: List the published-version archive for a workflow
+      description: >
+        Every entry that was ever actually live for this workflow (appended by
+        `POST /workflow/publish` and by `POST /workflow/{id}/versions/{version}/rollback`,
+        archiving whatever it supersedes) — not the per-save draft trail returned by
+        `GET /workflow/history`. Tenant-scoped by `req.tenantId`, never by `{id}` alone: a
+        workflow belonging to another tenant is indistinguishable from a nonexistent one (`404`),
+        so cross-tenant existence can never be inferred from the response shape.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Published-version archive, most recent version first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PublishedWorkflowVersion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflow/{id}/versions/{version}/rollback:
+    post:
+      tags: [Workflows]
+      summary: Roll back to a previously published version
+      description: >
+        Republishes an archived version's `nodes`/`edges` as a **brand new** version — it never
+        rewrites the version number that content was originally published under, so history stays
+        linear and auditable. Before rolling back, whatever is currently live is itself archived
+        as a new `PublishedWorkflowVersion` entry, exactly like a normal `POST /workflow/publish`
+        would archive the version it supersedes.
+
+        Goes through the same two publish gates as `POST /workflow/publish`
+        (`ValidationEngine` structural check + `validateRuntimeCompatibility`), evaluated against
+        the ARCHIVED content, not the current graph — a version that used to be valid can be
+        rejected today if the runtime capability it depended on has since been removed (see
+        `docs/patterns/workflow-execution-contract.md` §2). A rollback to such a version fails the
+        same way a fresh publish of that graph would; it is never applied half-broken.
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          description: The archived version number to roll back to (must exist in that workflow's `publishedVersions` archive).
+      responses:
+        '200':
+          description: Rolled back — republished as a new version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  workflow:
+                    $ref: '#/components/schemas/Workflow'
+        '400':
+          description: '`{version}` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: >
+            The workflow does not exist for this tenant, or `{version}` has no matching entry in
+            its published-version archive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: >
+            The archived version's graph no longer passes validation (structural or runtime
+            capability) against the current `ValidationEngine`/runtime — same shape as a rejected
+            `POST /workflow/publish`; `issues` carries the verbatim `ValidationEngine` findings.
+            The workflow is left unchanged, still on whatever version was live before this call.
           content:
             application/json:
               schema:
@@ -2303,6 +2459,230 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /developers/webhooks:
+    post:
+      tags: [WebhookEndpoints]
+      summary: Create a new tenant-scoped webhook endpoint
+      description: >
+        Admin-only, tenant-scoped (`requireTenant` + `requireRole(['admin'])` — same
+        authorization level as `/developers/keys` and `/billing/*`; a tenant webhook endpoint
+        receives real event payloads, call outcomes and lead data, signed with a secret only the
+        creating tenant should ever see). Rejects the 6th active endpoint for the tenant rather
+        than silently failing or evicting an existing one (`409`) — the limit is 5 active
+        endpoints per tenant.
+
+        The plaintext `secret` (`whsec_...`) in the `201` response is present **exactly once,
+        only in this response** — it is SHA-256 hashed before being persisted (that hash also
+        doubles as the actual HMAC-SHA256 signing key used for every future delivery to this
+        endpoint) and can never be retrieved again afterwards, by this endpoint or any other. If
+        the caller loses it, the only remedy is `POST /developers/webhooks/{id}/regenerate-secret`,
+        which invalidates the old secret and mints a new one — there is no "reveal again" path.
+
+        **Not yet backed by persistence in this deployment**: `prisma/schema.prisma` now defines
+        the `TenantWebhookEndpoint` model this route needs (landed in
+        `.agents/handoffs/onda-5/01-para-05-schema-webhook-endpoint-pronto.md`), but
+        `src/repositories/webhookEndpointRepository.ts` has not yet been switched over to query it
+        — every function there still unconditionally throws `WebhookEndpointSchemaNotReadyError`.
+        Until that wiring lands (open, `Status: aberto`, in the handoff above), every call below
+        returns `503` — see that response for each operation. The request/response contract
+        documented here is final and will not change shape once persistence is wired up.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: Must be a public HTTPS URL (SSRF-guarded — cannot point at a private/reserved/internal host).
+                  example: 'https://example.com/webhooks/birth-voices'
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: string
+                  description: Event types to receive (e.g. `["call.completed"]`), or `["*"]` for all.
+      responses:
+        '201':
+          description: Endpoint created. Copy `secret` now — the server will never return it again.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookEndpoint:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      url:
+                        type: string
+                        format: uri
+                      events:
+                        type: array
+                        items:
+                          type: string
+                      active:
+                        type: boolean
+                      createdAt:
+                        type: string
+                        format: date-time
+                  secret:
+                    type: string
+                    example: 'whsec_9f2c...'
+                    description: >
+                      Plaintext signing secret. Present only in this response — not stored
+                      anywhere in recoverable form, never logged, never returned by
+                      `GET /developers/webhooks` or any other endpoint. To verify a delivery
+                      signature, SHA-256-hash this value first and use that hex digest as the
+                      HMAC-SHA256 key — the platform never stores the plaintext itself.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The tenant already has 5 active webhook endpoints (the maximum). Remove or deactivate one before creating another.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >
+            Tenant-scoped webhook endpoints are not available in this deployment yet
+            (`TenantWebhookEndpoint` scaffold — see description above). Never returned as a
+            fabricated empty success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [WebhookEndpoints]
+      summary: List the tenant's webhook endpoints
+      description: >
+        Admin-only. Metadata only (`url`, `events`, `active`, delivery bookkeeping) — never
+        includes the secret or its hash. See `POST /developers/webhooks` for the persistence
+        scaffold note (`503`).
+      responses:
+        '200':
+          description: The tenant's webhook endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookEndpoints:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookEndpointMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Tenant-scoped webhook endpoints are not available in this deployment yet — see `POST /developers/webhooks`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /developers/webhooks/{id}:
+    delete:
+      tags: [WebhookEndpoints]
+      summary: Delete a webhook endpoint
+      description: >
+        Admin-only. Tenant-scoped lookup: an endpoint belonging to another tenant is
+        indistinguishable from a nonexistent one (`404`) — an admin from tenant A can never
+        delete, or even discover the existence of, an endpoint belonging to tenant B. See
+        `POST /developers/webhooks` for the persistence scaffold note (`503`).
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Tenant-scoped webhook endpoints are not available in this deployment yet — see `POST /developers/webhooks`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /developers/webhooks/{id}/regenerate-secret:
+    post:
+      tags: [WebhookEndpoints]
+      summary: Invalidate the current secret and mint a new one
+      description: >
+        Admin-only. The only way to get a working secret again after the one-time reveal at
+        creation: invalidates the endpoint's current signing secret and mints a new one, returned
+        in plaintext exactly once in this response, same rule as `POST /developers/webhooks` —
+        there is no "reveal again" path anywhere in this API. Tenant-scoped lookup, same
+        cross-tenant `404` behavior as `DELETE /developers/webhooks/{id}`. See
+        `POST /developers/webhooks` for the persistence scaffold note (`503`).
+      parameters:
+        - $ref: '#/components/parameters/idPathParam'
+      responses:
+        '200':
+          description: Secret regenerated. Copy `secret` now — the server will never return it again.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookEndpoint:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      url:
+                        type: string
+                        format: uri
+                      events:
+                        type: array
+                        items:
+                          type: string
+                      active:
+                        type: boolean
+                      createdAt:
+                        type: string
+                        format: date-time
+                  secret:
+                    type: string
+                    example: 'whsec_9f2c...'
+                    description: >
+                      New plaintext signing secret. Present only in this response; the old secret
+                      stops working immediately. Same non-recoverability guarantee as the `secret`
+                      field of `POST /developers/webhooks`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Tenant-scoped webhook endpoints are not available in this deployment yet — see `POST /developers/webhooks`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /billing/summary:
     get:
