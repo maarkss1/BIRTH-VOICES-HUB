@@ -1,15 +1,34 @@
 import React from 'react';
-import { Key, Webhook, Copy, Eye, EyeOff, Plus, Trash2, Check, RefreshCw, X, AlertTriangle } from 'lucide-react';
+import { Key, Webhook, Copy, Check, Plus, Trash2, RefreshCw, X, AlertTriangle, Lock, ShieldOff } from 'lucide-react';
 import { useDeveloperSettings } from '../../hooks/useDeveloperSettings';
+import { Badge, Button, EmptyState, Skeleton } from '../../components/design-system';
 
+// API Keys: connected to the real backend (.agents/handoffs/onda-4/01-para-02-api-key-endpoints-prontos.md)
+// — POST/GET/DELETE /api/developers/keys, admin-only within the tenant (same authorization level
+// as /api/users and /api/billing/*, AGENTS.md §14/§15). See hooks/useDeveloperSettings.ts.
+//
+// Webhooks: intentionally left untouched — no backend exists yet for tenant-configurable webhook
+// endpoints (.agents/handoffs/onda-4/01-para-00-webhooks-tenant-fora-de-escopo.md, still unowned).
+// The section below already tells the truth on its own (empty state + disabled "add endpoint"
+// button + local-only test simulation) since the Onda 2 mitigation — not this agent's domain to
+// resolve.
 export default function DevelopersPage() {
   const {
-    keys,
+    isAdmin,
+    keysState,
+    fetchKeys,
     copiedId,
     newKeyName,
     setNewKeyName,
     showCreateModal,
     setShowCreateModal,
+    isCreating,
+    createError,
+    setCreateError,
+    createdKeyReveal,
+    dismissCreatedKeyReveal,
+    revokingId,
+    revokeError,
     testWebhookModal,
     setTestWebhookModal,
     webhookLog,
@@ -18,7 +37,6 @@ export default function DevelopersPage() {
     setDialogConfirm,
     handleTestWebhook,
     handleCreateKey,
-    toggleVisibility,
     handleRevokeKey,
     handleCopy,
   } = useDeveloperSettings();
@@ -32,17 +50,6 @@ export default function DevelopersPage() {
             </div>
         </div>
 
-        {/* No backend issues or validates these keys/webhooks yet (see
-            hooks/useDeveloperSettings.ts) — labeled so this reads as a UI preview, not a live
-            credential management surface. */}
-        <div className="p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-sm font-medium flex items-start gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-            <span>
-              Pré-visualização de layout. Chaves e webhooks criados aqui existem apenas nesta sessão do navegador —
-              nenhuma API real reconhece essas credenciais ainda.
-            </span>
-        </div>
-
         <div className="space-y-8">
             {/* API Keys */}
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
@@ -52,67 +59,112 @@ export default function DevelopersPage() {
                             <Key className="h-5 w-5 text-brand" />
                             API Keys
                         </h3>
-                        <p className="text-sm text-slate-500">Chaves de produção e teste para autenticação segura.</p>
+                        <p className="text-sm text-slate-500">Chaves para autenticação segura via <code className="font-mono text-xs">Authorization: Bearer</code>.</p>
                     </div>
-                    <button 
-                        onClick={() => setShowCreateModal(true)}
-                        className="flex items-center gap-2 px-4 py-2 bg-brand text-white rounded-lg hover:opacity-90 text-sm font-medium transition-opacity"
-                    >
-                        <Plus className="h-4 w-4" /> Criar Chave
-                    </button>
-                </div>
-
-                <div className="space-y-3">
-                    {keys.length === 0 ? (
-                        <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-slate-400">
-                            Nenhuma chave de API configurada. Clique em "Criar Chave" para gerar uma.
-                        </div>
-                    ) : (
-                        keys.map((k) => (
-                            <div key={k.id} className="p-4 border border-slate-200 rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50 hover:border-slate-300 transition-colors">
-                                <div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-bold text-slate-900 text-sm">{k.name}</span>
-                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                            k.value.includes('_live_') ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 text-slate-700'
-                                        }`}>
-                                            {k.value.includes('_live_') ? 'LIVE' : 'TEST'}
-                                        </span>
-                                    </div>
-                                    <div className="font-mono text-xs text-slate-600 mt-2 bg-white px-2.5 py-1 rounded border border-slate-100 select-all max-w-[280px] md:max-w-md truncate">
-                                        {k.visible ? k.value : k.maskedValue}
-                                    </div>
-                                    <div className="text-slate-400 text-[10px] mt-1.5 font-sans">
-                                        Criada em: {k.createdAt}
-                                    </div>
-                                </div>
-                                <div className="flex gap-2 self-end md:self-center">
-                                    <button 
-                                        onClick={() => handleCopy(k.id, k.value)}
-                                        className="p-2 hover:bg-white rounded text-slate-500 hover:text-brand border border-slate-200 hover:border-slate-350 bg-white shadow-sm transition-all"
-                                        title="Copiar token"
-                                    >
-                                        {copiedId === k.id ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
-                                    </button>
-                                    <button 
-                                        onClick={() => toggleVisibility(k.id)}
-                                        className="p-2 hover:bg-white rounded text-slate-500 hover:text-brand border border-slate-200 hover:border-slate-350 bg-white shadow-sm transition-all"
-                                        title={k.visible ? "Mascarar chave" : "Mostrar chave"}
-                                    >
-                                        {k.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                                    </button>
-                                    <button 
-                                        onClick={() => handleRevokeKey(k.id)}
-                                        className="p-2 hover:bg-red-50 rounded text-slate-400 hover:text-red-650 border border-slate-200 hover:border-red-200 bg-white shadow-sm transition-all"
-                                        title="Revogar chave de API"
-                                    >
-                                        <Trash2 className="h-4 w-4" />
-                                    </button>
-                                </div>
-                            </div>
-                        ))
+                    {isAdmin && (
+                        <button
+                            onClick={() => { setCreateError(null); setShowCreateModal(true); }}
+                            className="flex items-center gap-2 px-4 py-2 bg-brand text-white rounded-lg hover:opacity-90 text-sm font-medium transition-opacity"
+                        >
+                            <Plus className="h-4 w-4" /> Criar Chave
+                        </button>
                     )}
                 </div>
+
+                {!isAdmin ? (
+                    <EmptyState
+                        icon={<Lock className="h-8 w-8" />}
+                        title="Acesso restrito"
+                        description="A gestão de chaves de API exige o papel de administrador nesta organização."
+                    />
+                ) : (
+                    <div className="space-y-4">
+                        {createdKeyReveal && (
+                            <div className="p-4 bg-amber-50 border border-amber-300 rounded-lg space-y-3">
+                                <div className="flex items-start gap-2 text-amber-800 text-sm font-semibold">
+                                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                                    <span>
+                                        Chave "{createdKeyReveal.name}" criada. Copie agora — por segurança, ela não
+                                        será mostrada novamente em lugar nenhum.
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <code className="flex-1 font-mono text-xs bg-white border border-amber-200 rounded px-3 py-2 overflow-x-auto select-all">
+                                        {createdKeyReveal.key}
+                                    </code>
+                                    <button
+                                        onClick={() => handleCopy(createdKeyReveal.id, createdKeyReveal.key)}
+                                        className="p-2 bg-white border border-amber-200 rounded text-amber-700 hover:border-amber-400 shrink-0"
+                                        title="Copiar chave"
+                                    >
+                                        {copiedId === createdKeyReveal.id ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                                    </button>
+                                </div>
+                                <div className="flex justify-end">
+                                    <Button size="sm" variant="outline" onClick={dismissCreatedKeyReveal}>
+                                        Já copiei, fechar
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
+
+                        {revokeError && (
+                            <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-sm font-medium flex items-start gap-2">
+                                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                                <span>{revokeError}</span>
+                            </div>
+                        )}
+
+                        {keysState.status === 'loading' ? (
+                            <div className="space-y-3">
+                                <Skeleton className="h-20 w-full" />
+                                <Skeleton className="h-20 w-full" />
+                            </div>
+                        ) : keysState.status === 'error' ? (
+                            <EmptyState
+                                icon={<AlertTriangle className="h-8 w-8" />}
+                                title="Não foi possível carregar as chaves de API"
+                                description="Tente novamente em alguns instantes."
+                                action={<Button size="sm" variant="outline" onClick={fetchKeys}>Tentar novamente</Button>}
+                            />
+                        ) : keysState.data.length === 0 ? (
+                            <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-slate-400">
+                                Nenhuma chave de API configurada. Clique em "Criar Chave" para gerar uma.
+                            </div>
+                        ) : (
+                            keysState.data.map((k) => (
+                                <div key={k.id} className="p-4 border border-slate-200 rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50 hover:border-slate-300 transition-colors">
+                                    <div>
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-bold text-slate-900 text-sm">{k.name}</span>
+                                            <Badge variant={k.revoked ? 'danger' : 'success'}>
+                                                {k.revoked ? 'Revogada' : 'Ativa'}
+                                            </Badge>
+                                        </div>
+                                        <div className="text-slate-400 text-xs mt-1.5 font-sans">
+                                            Criada em {new Date(k.createdAt).toLocaleString('pt-BR')}
+                                            {' · '}
+                                            Último uso: {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString('pt-BR') : 'nunca'}
+                                            {' · '}
+                                            {k.expiresAt ? `Expira em ${new Date(k.expiresAt).toLocaleDateString('pt-BR')}` : 'Sem expiração'}
+                                            {k.revoked && k.revokedAt && ` · Revogada em ${new Date(k.revokedAt).toLocaleString('pt-BR')}`}
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-2 self-end md:self-center">
+                                        <button
+                                            onClick={() => handleRevokeKey(k.id, k.name)}
+                                            disabled={k.revoked || revokingId === k.id}
+                                            className="p-2 hover:bg-red-50 rounded text-slate-400 hover:text-red-650 border border-slate-200 hover:border-red-200 bg-white shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white"
+                                            title={k.revoked ? 'Chave já revogada' : 'Revogar chave de API'}
+                                        >
+                                            {k.revoked ? <ShieldOff className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
+                                        </button>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Webhooks */}
@@ -160,7 +212,7 @@ export default function DevelopersPage() {
                             </h3>
                             <p className="text-xs text-slate-500 font-mono mt-1">{testWebhookModal}</p>
                         </div>
-                        <button 
+                        <button
                             onClick={() => {
                                 setTestWebhookModal(null);
                                 setWebhookLog(null);
@@ -170,7 +222,7 @@ export default function DevelopersPage() {
                             <X className="h-5 w-5" />
                         </button>
                     </div>
-                    
+
                     <div className="flex flex-col md:flex-row h-[400px]">
                         {/* Payload Config */}
                         <div className="p-5 w-full md:w-1/2 border-r border-slate-100 flex flex-col gap-4 bg-slate-50">
@@ -183,19 +235,19 @@ export default function DevelopersPage() {
                             </div>
                             <div className="flex-1 flex flex-col">
                                 <label className="block text-xs font-bold text-slate-600 mb-2">Corpo da Requisição (Payload)</label>
-                                <textarea 
+                                <textarea
                                     className="w-full flex-1 p-3 text-xs border border-slate-300 rounded font-mono bg-slate-800 text-green-400 focus:outline-none resize-none"
                                     defaultValue={JSON.stringify({ event: "call.completed", data: { call_id: "test-123", duration: 120 } }, null, 2)}
                                 ></textarea>
                             </div>
-                            <button 
+                            <button
                                 onClick={handleTestWebhook}
                                 className="w-full py-2 bg-brand text-white text-sm font-bold rounded-lg hover:opacity-90 flex items-center justify-center gap-2 transition-opacity"
                             >
                                 <Webhook className="h-4 w-4" /> Enviar Teste
                             </button>
                         </div>
-                        
+
                         {/* Response Log */}
                         <div className="p-5 w-full md:w-1/2 flex flex-col bg-slate-50">
                             <label className="block text-xs font-bold text-slate-600 mb-2">Logs de Resposta</label>
@@ -204,7 +256,7 @@ export default function DevelopersPage() {
                                     <div className={`p-2 text-xs font-bold rounded ${webhookLog.status === 200 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                         Status: {webhookLog.status} OK
                                     </div>
-                                    <textarea 
+                                    <textarea
                                         className="w-full flex-1 p-3 text-xs border border-slate-200 rounded font-mono bg-white text-slate-700 outline-none resize-none"
                                         readOnly
                                         value={webhookLog.body}
@@ -231,7 +283,7 @@ export default function DevelopersPage() {
                             <Key className="h-4 w-4 text-brand" />
                             Criar Nova Chave de API
                         </h3>
-                        <button 
+                        <button
                             onClick={() => setShowCreateModal(false)}
                             className="text-slate-400 hover:text-slate-600 rounded p-1"
                         >
@@ -242,33 +294,44 @@ export default function DevelopersPage() {
                         <div className="p-6 space-y-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Identificador da Chave</label>
-                                <input 
-                                    type="text" 
+                                <input
+                                    type="text"
                                     value={newKeyName}
-                                    placeholder="Ex: Production Live, Test Chatbot, staging_client" 
+                                    placeholder="Ex: CI Pipeline, Integração AtlasGR, staging"
                                     onChange={(e) => setNewKeyName(e.target.value)}
                                     className="w-full p-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent text-sm font-sans"
                                     required
                                     autoFocus
+                                    disabled={isCreating}
                                 />
                             </div>
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs text-slate-500 leading-relaxed">
-                                <span className="font-bold text-slate-700">Nota:</span> Se o nome contiver "live" ou "produção", a chave será gerada como chave ativa de produção (<span className="font-mono text-amber-700">pk_live_*</span>). Caso contrário, será gerada uma chave de teste (<span className="font-mono text-slate-700">pk_test_*</span>).
+                                <span className="font-bold text-slate-700">Nota:</span> a chave completa é exibida
+                                apenas uma vez, imediatamente após a criação. Guarde-a em local seguro — ela não
+                                poderá ser recuperada depois.
                             </div>
+                            {createError && (
+                                <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-sm font-medium flex items-start gap-2">
+                                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                                    <span>{createError}</span>
+                                </div>
+                            )}
                         </div>
                         <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
-                            <button 
+                            <button
                                 type="button"
                                 onClick={() => setShowCreateModal(false)}
-                                className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-100 text-sm font-medium text-slate-600 transition-colors"
+                                disabled={isCreating}
+                                className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-100 text-sm font-medium text-slate-600 transition-colors disabled:opacity-50"
                             >
                                 Cancelar
                             </button>
-                            <button 
+                            <button
                                 type="submit"
-                                className="px-4 py-2 bg-brand text-white rounded-lg hover:opacity-95 text-sm font-medium transition-opacity"
+                                disabled={isCreating}
+                                className="px-4 py-2 bg-brand text-white rounded-lg hover:opacity-95 text-sm font-medium transition-opacity disabled:opacity-60"
                             >
-                                Gerar Credencial
+                                {isCreating ? 'Gerando...' : 'Gerar Credencial'}
                             </button>
                         </div>
                     </form>
@@ -283,13 +346,13 @@ export default function DevelopersPage() {
                     <h3 className="font-bold text-slate-900 text-lg mb-2">{dialogConfirm.title}</h3>
                     <p className="text-sm text-slate-600 mb-6">{dialogConfirm.message}</p>
                     <div className="flex gap-3">
-                        <button 
+                        <button
                             onClick={() => setDialogConfirm(null)}
                             className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-lg text-sm transition-colors"
                         >
                             Cancelar
                         </button>
-                        <button 
+                        <button
                             onClick={dialogConfirm.onConfirm}
                             className="flex-1 py-2.5 bg-red-600 text-white font-bold rounded-lg text-sm hover:bg-red-750 transition-colors"
                         >
