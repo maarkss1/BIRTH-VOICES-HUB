@@ -47,14 +47,16 @@ export interface WorkflowVersionSnapshot {
 /**
  * A published-version archive entry, created by `publishWorkflow`/`rollbackToVersion` for the
  * content a publish/rollback is about to supersede — never for a version that was never actually
- * live. This is the same shape proposed as the dedicated Prisma `WorkflowVersion` model in
- * `.agents/handoffs/onda-5/07-para-01-schema-workflow-version.md` (id/workflowId are implicit —
- * the parent Workflow row and its metadata array — version/nodes/edges/metadata/publishedAt/
- * publishedBy are the same fields). Until that handoff is resolved by Agente 01, this is stored
- * inline in `Workflow.metadata.publishedVersions` instead of its own table — real, tenant-scoped
- * (it lives inside the tenant's own Workflow row) and functional today, not a stub. When the
- * dedicated table lands, `archivePublishedVersion`/`listWorkflowVersions`/`rollbackToVersion`
- * below should be the only functions that need to change; their public signatures should not.
+ * live. Backed by the dedicated Prisma `WorkflowVersion` table (see the model comment in
+ * `prisma/schema.prisma` and `.agents/handoffs/onda-5/01-para-07-schema-workflow-version-
+ * pronto.md`), one immutable row per (workflowId, version). This interface is the service-layer
+ * return/input shape; `toPublishedWorkflowVersion` below converts a `WorkflowVersion` Prisma row
+ * into it.
+ *
+ * Earlier in Onda 5 this was stored inline in `Workflow.metadata.publishedVersions` (interim
+ * mechanism, before the dedicated table existed). That JSON is NOT migrated/backfilled into the
+ * table — any workflow published before this change keeps its old archive frozen in `metadata`,
+ * unread by the code below (per the handoff's explicit "sem backfill retroativo" decision).
  */
 export interface PublishedWorkflowVersion {
   version: number;
@@ -65,50 +67,72 @@ export interface PublishedWorkflowVersion {
   publishedBy: string | null;
 }
 
+function toPublishedWorkflowVersion(row: {
+  version: number;
+  nodes: unknown;
+  edges: unknown;
+  metadata: unknown;
+  publishedAt: Date;
+  publishedBy: string | null;
+}): PublishedWorkflowVersion {
+  return {
+    version: row.version,
+    nodes: row.nodes,
+    edges: row.edges,
+    metadata: (row.metadata as Record<string, unknown> | null) ?? {},
+    publishedAt: row.publishedAt.toISOString(),
+    publishedBy: row.publishedBy,
+  };
+}
+
 /**
- * Shape of the Workflow.metadata Prisma `Json` field. There's no dedicated WorkflowVersion table,
- * so version history is kept inline here. `history` is the pre-existing per-save draft trail
- * (every `saveWorkflow` call, published or not); `publishedVersions` is the append-only archive of
- * content that was actually live at some point (only touched by `publishWorkflow`/
- * `rollbackToVersion`) — see `PublishedWorkflowVersion` above.
+ * Shape of the Workflow.metadata Prisma `Json` field. `history` is the per-save draft trail
+ * (every `saveWorkflow` call, published or not) — unaffected by this change, still stored inline.
+ *
+ * `publishedVersions` is kept here ONLY as the legacy shape of content archived before the
+ * dedicated `WorkflowVersion` table existed (see `PublishedWorkflowVersion` above). Nothing in
+ * this file writes to it anymore; it is never read by `listWorkflowVersions`/`rollbackToVersion`
+ * either — a workflow published before this migration keeps that history frozen here, invisible
+ * to the new code path, exactly as documented in the schema handoff.
  */
 export interface WorkflowMetadata {
   history?: WorkflowVersionSnapshot[];
+  /** @deprecated Legacy pre-WorkflowVersion-table archive. Frozen; no longer read or written. */
   publishedVersions?: PublishedWorkflowVersion[];
   [key: string]: unknown;
 }
 
 /**
- * Appends an archive entry for `versionToArchive` to `metadata.publishedVersions`, unless one
- * already exists for that version number (defensive: `Workflow.version` should only ever
- * increase, via `publishWorkflow`/`rollbackToVersion`, so a collision should never happen — if it
- * ever does, e.g. a manual DB edit, we log and skip rather than silently overwrite/duplicate
- * archived history).
+ * Archives `versionToArchive`'s content as a new `WorkflowVersion` row, unless one already exists
+ * for that (workflowId, version) pair — enforced by the DB's own `@@unique([workflowId, version])`
+ * constraint (not just an in-memory check), so a genuine race between two concurrent publishes/
+ * rollbacks for the same workflow can never produce two archive rows for the same version.
+ * `Workflow.version` should only ever increase via `publishWorkflow`/`rollbackToVersion`, so a
+ * collision should never happen in normal operation; if the constraint is hit anyway (race, or a
+ * manual DB edit), we log and keep the already-archived row rather than throwing or duplicating.
  */
-function archivePublishedVersion(
-  metadata: WorkflowMetadata,
+async function archivePublishedVersion(
+  workflowId: string,
   versionToArchive: number,
   nodes: unknown,
   edges: unknown,
   publishedBy: string
-): WorkflowMetadata {
-  const publishedVersions = metadata.publishedVersions ? [...metadata.publishedVersions] : [];
-
-  if (publishedVersions.some((entry) => entry.version === versionToArchive)) {
-    logger.error('Refusing to duplicate an already-archived workflow version', { versionToArchive });
-    return { ...metadata, publishedVersions };
+): Promise<void> {
+  try {
+    await workflowRepository.createWorkflowVersion({
+      workflowId,
+      version: versionToArchive,
+      nodes,
+      edges,
+      publishedBy,
+    });
+  } catch (err) {
+    if (workflowRepository.isUniqueConstraintViolation(err)) {
+      logger.error('Refusing to duplicate an already-archived workflow version', { workflowId, versionToArchive });
+      return;
+    }
+    throw err;
   }
-
-  publishedVersions.push({
-    version: versionToArchive,
-    nodes,
-    edges,
-    metadata: {},
-    publishedAt: new Date().toISOString(),
-    publishedBy,
-  });
-
-  return { ...metadata, publishedVersions };
 }
 
 export function getWorkflow(tenantId: string, _version?: number) {
@@ -196,18 +220,11 @@ export async function publishWorkflow(tenantId: string, userId: string) {
     throw new ValidationFailedError(issues);
   }
 
-  const metadata = archivePublishedVersion(
-    (existing.metadata as unknown as WorkflowMetadata) || {},
-    existing.version,
-    existing.nodes,
-    existing.edges,
-    userId
-  );
+  await archivePublishedVersion(existing.id, existing.version, existing.nodes, existing.edges, userId);
 
   return workflowRepository.upsertWorkflow(tenantId, userId, existing.id, {
     status: 'active',
     version: existing.version + 1,
-    metadata,
   });
 }
 
@@ -221,9 +238,8 @@ export async function listWorkflowVersions(tenantId: string, workflowId: string)
   const workflow = await workflowRepository.findWorkflowByIdForTenant(workflowId, tenantId);
   if (!workflow) throw new NotFoundError('Workflow não encontrado.');
 
-  const metadata = workflow.metadata as unknown as WorkflowMetadata;
-  const versions = metadata?.publishedVersions || [];
-  return [...versions].sort((a, b) => b.version - a.version);
+  const versions = await workflowRepository.findWorkflowVersionsForWorkflow(workflow.id);
+  return versions.map(toPublishedWorkflowVersion);
 }
 
 /**
@@ -242,8 +258,7 @@ export async function rollbackToVersion(tenantId: string, userId: string, workfl
   const existing = await workflowRepository.findWorkflowByIdForTenant(workflowId, tenantId);
   if (!existing) throw new NotFoundError('Workflow não encontrado.');
 
-  const metadata = (existing.metadata as unknown as WorkflowMetadata) || {};
-  const target = (metadata.publishedVersions || []).find((entry) => entry.version === version);
+  const target = await workflowRepository.findWorkflowVersion(existing.id, version);
   if (!target) throw new NotFoundError(`Versão ${version} não encontrada para este fluxo.`);
 
   const { nodes, edges } = toStudioGraph(target.nodes, target.edges);
@@ -255,20 +270,13 @@ export async function rollbackToVersion(tenantId: string, userId: string, workfl
     throw new ValidationFailedError(issues);
   }
 
-  const archivedMetadata = archivePublishedVersion(
-    metadata,
-    existing.version,
-    existing.nodes,
-    existing.edges,
-    userId
-  );
+  await archivePublishedVersion(existing.id, existing.version, existing.nodes, existing.edges, userId);
 
   return workflowRepository.upsertWorkflow(tenantId, userId, existing.id, {
     nodes: target.nodes,
     edges: target.edges,
     status: 'active',
     version: existing.version + 1,
-    metadata: archivedMetadata,
   });
 }
 
