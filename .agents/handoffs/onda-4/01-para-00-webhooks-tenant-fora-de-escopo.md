@@ -53,10 +53,13 @@ Webhooks).
 
 ## Resolução (Coordenador, Onda 5)
 
-Decisão: **(a)** — atribuído nesta onda, contrato mínimo definido abaixo. Dono: **Agente 01**
-(schema + backend, mesmo raciocínio já usado para API Keys) seguido por **Agente 02** (conectar
-`pages/Dashboard/Developers.tsx` ao dado real). Ver task específica em
-`.agents/handoffs/onda-5/00-para-01-webhooks-tenant-contrato.md`.
+Decisão: **(a)** — atribuído nesta onda, contrato mínimo definido abaixo. **Correção à sugestão
+original deste handoff**: `webhook.service.ts`/`webhook.worker.ts` (onde o `dispatch()`/`signBody()`
+que precisam mudar já vivem) são propriedade exclusiva do **Agente 05** (`AGENTS.md` §11), não do
+Agente 01 — Agente 01 continua dono exclusivo só de `prisma/schema.prisma`. Dono real: **Agente
+05** (rotas/controller/service/worker + handoff de schema para Agente 01), seguido por **Agente 02**
+(conectar `pages/Dashboard/Developers.tsx` ao dado real). Ver task específica em
+`.agents/handoffs/onda-5/00-para-05-webhooks-tenant-contrato.md`.
 
 Contrato definido a partir da infraestrutura que **já existe** (`webhook.service.ts` +
 `webhook.worker.ts`, com fila BullMQ, retry exponencial de 5 tentativas e defesa SSRF já
@@ -70,7 +73,8 @@ implementadas — não reinventar nenhuma dessas partes):
 2. **Retry/backoff**: já resolvido — reusar exatamente `attempts: 5` / backoff exponencial de
    `webhook.service.ts`, sem mudança.
 3. **Limite por tenant**: máximo de 5 endpoints ativos por tenant.
-4. **Model Prisma** (`TenantWebhookEndpoint` ou nome equivalente, dono: Agente 01): `id`,
+4. **Model Prisma** (`TenantWebhookEndpoint` ou nome equivalente, dono exclusivo do schema: Agente
+   01 — Agente 05 propõe a forma via handoff, não edita `prisma/schema.prisma` diretamente): `id`,
    `tenantId` (FK), `url`, `secretHash`, `events` (`Json`, lista de tipos de evento assinados ou
    `["*"]` para todos), `active`, `createdAt`, `lastDeliveryAt`, `lastDeliveryStatus`.
 5. **Resolução em `webhookService.dispatch`**: substituir o TODO existente — para um dado
