@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { Queue } from 'bullmq';
 import { getRedisConnectionOptions } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
+import { resolveActiveEndpointsForEvent } from './webhookEndpointService.js';
 
 /**
  * Envelope documented in docs/webhooks/index.md — consumers verify the signature over exactly
@@ -28,8 +29,18 @@ export class WebhookService {
    * Queues an event for delivery. Never throws: webhook delivery is a side effect of whatever
    * business operation produced the event, and must not be able to fail it.
    *
-   * @param targetUrl Per-event destination — used for calls that carry their own callback URL.
-   *                  Falls back to the deployment-wide `WEBHOOK_URL`.
+   * @param targetUrl Per-call destination — used for calls that carry their own callback URL
+   *                  (e.g. `POST /api/voice/outbound`'s `callbackUrl`). When passed explicitly,
+   *                  this legacy path is used as-is and per-tenant endpoints are not consulted —
+   *                  the caller already named exactly one destination.
+   *
+   *                  When omitted, resolves the tenant's configured `TenantWebhookEndpoint`s
+   *                  (webhookEndpointService.resolveActiveEndpointsForEvent) and enqueues one
+   *                  delivery per active endpoint whose `events` includes this event type (or
+   *                  `"*"`). Only when the tenant has NO active endpoint configured at all does
+   *                  this fall back to the deployment-wide `WEBHOOK_URL`/`TEST_WEBHOOK_URL` env
+   *                  vars — see resolveActiveEndpointsForEvent's `hasAnyActiveEndpoint` doc for why
+   *                  a configured-but-non-matching tenant never falls through to that fallback.
    */
   public async dispatch(
     tenantId: string,
@@ -38,15 +49,6 @@ export class WebhookService {
     targetUrl?: string,
   ): Promise<void> {
     try {
-      // TODO: once a Webhook model exists, resolve the tenant's configured endpoint here instead
-      // of relying on a per-call URL or a single deployment-wide one.
-      const webhookUrl = targetUrl || process.env.WEBHOOK_URL || process.env.TEST_WEBHOOK_URL;
-
-      if (!webhookUrl) {
-        logger.debug(`[WebhookService] No webhook URL configured for tenant ${tenantId}`);
-        return;
-      }
-
       const payload: WebhookPayload = {
         id: `evt_${randomUUID()}`,
         type: event,
@@ -55,22 +57,68 @@ export class WebhookService {
         data,
       };
 
-      await this.webhookQueue.add(
-        'send_webhook',
-        { url: webhookUrl, payload },
-        {
-          attempts: 5,
-          backoff: {
-            type: 'exponential',
-            delay: 2000
-          }
-        }
-      );
+      if (targetUrl) {
+        await this.enqueue({ url: targetUrl, payload });
+        logger.info(`[WebhookService] Queued event ${event} for tenant ${tenantId} (explicit targetUrl)`);
+        return;
+      }
 
-      logger.info(`[WebhookService] Queued event ${event} for tenant ${tenantId}`);
+      // Resolving per-tenant endpoints depends on a Prisma model
+      // (.agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint.md) that does not exist yet —
+      // until that lands, resolution throws WebhookEndpointSchemaNotReadyError for every tenant,
+      // which this catch treats exactly like "tenant has no active endpoint configured", falling
+      // through to the legacy env-var behavior below unchanged.
+      let hasAnyActiveEndpoint = false;
+      let targets: { endpointId: string; url: string }[] = [];
+      try {
+        const resolution = await resolveActiveEndpointsForEvent(tenantId, event);
+        hasAnyActiveEndpoint = resolution.hasAnyActiveEndpoint;
+        targets = resolution.targets;
+      } catch (resolutionError) {
+        logger.debug(
+          `[WebhookService] Could not resolve tenant webhook endpoints for tenant ${tenantId} (falling back to deployment-wide config): ${
+            resolutionError instanceof Error ? resolutionError.message : String(resolutionError)
+          }`,
+        );
+      }
+
+      if (hasAnyActiveEndpoint) {
+        if (targets.length === 0) {
+          // Tenant has active endpoints, just none subscribed to this event type — a deliberate
+          // no-op, never redirected to the deployment-wide fallback (see dispatch's doc comment).
+          logger.debug(`[WebhookService] No tenant endpoint subscribed to event ${event} for tenant ${tenantId}`);
+          return;
+        }
+        for (const target of targets) {
+          await this.enqueue({ url: target.url, payload, endpointId: target.endpointId });
+        }
+        logger.info(
+          `[WebhookService] Queued event ${event} for tenant ${tenantId} to ${targets.length} tenant endpoint(s)`,
+        );
+        return;
+      }
+
+      const webhookUrl = process.env.WEBHOOK_URL || process.env.TEST_WEBHOOK_URL;
+      if (!webhookUrl) {
+        logger.debug(`[WebhookService] No webhook URL configured for tenant ${tenantId}`);
+        return;
+      }
+
+      await this.enqueue({ url: webhookUrl, payload });
+      logger.info(`[WebhookService] Queued event ${event} for tenant ${tenantId} (deployment-wide fallback)`);
     } catch (error) {
       logger.error(`[WebhookService] Error dispatching webhook event ${event}`, error);
     }
+  }
+
+  private async enqueue(job: { url: string; payload: WebhookPayload; endpointId?: string }): Promise<void> {
+    await this.webhookQueue.add('send_webhook', job, {
+      attempts: 5,
+      backoff: {
+        type: 'exponential',
+        delay: 2000,
+      },
+    });
   }
 }
 
