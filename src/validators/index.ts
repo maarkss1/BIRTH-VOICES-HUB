@@ -71,7 +71,11 @@ export const metricSchema = z.object({
 // literal-IP check only — it does not resolve DNS, so a public hostname that resolves to a
 // private address at request time is not caught here; tighten with an egress allowlist/proxy if
 // untrusted tenants ever get API access and this residual DNS-rebinding gap needs closing too.
-function isPrivateOrReservedHost(hostname: string): boolean {
+//
+// Exported so `webhook.worker.ts` (Agente 05) can apply the same check as defense-in-depth right
+// before the actual outbound fetch — see `.agents/handoffs/onda-1/01-para-05-webhook-worker-ssrf-defense-in-depth.md`.
+// A future `Webhook` model configured outside this Zod schema must not bypass this check.
+export function isPrivateOrReservedHost(hostname: string): boolean {
   // Node's URL.hostname keeps the brackets for IPv6 literals (e.g. "[::1]") — strip them so the
   // IPv6 branch below matches against the bare address.
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');

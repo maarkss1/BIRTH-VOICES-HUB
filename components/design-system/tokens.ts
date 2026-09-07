@@ -149,3 +149,153 @@ export const zIndex = {
   tooltip: 1600,
   toast: 1700,
 };
+
+// ============================================================================
+// WCAG 2.2 AA BRAND-COLOR CONTRAST UTILITIES
+// ============================================================================
+// This product is white-label per tenant: `useSessionStore.setBrandColor` and
+// `brandColor.controller.ts` let each tenant pick an arbitrary hex color for `--brand-color`,
+// which `bg-brand` / `text-brand` then consume everywhere. A hardcoded `text-white` on `bg-brand`
+// (or `text-brand` on a light `bg-brand-50` tint) silently fails WCAG contrast the moment a tenant
+// picks a light brand color (e.g. a pastel) — this is the single most common contrast bug in a
+// white-label design system. The helpers below compute contrast at render time instead of
+// assuming a fixed palette.
+
+const HEX_COLOR_RE = /^#?([0-9a-fA-F]{6})$/;
+
+/** Parses a `#rrggbb` (or `rrggbb`) hex color into 0-255 RGB channels. Returns null if malformed. */
+export function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const match = HEX_COLOR_RE.exec(hex.trim());
+  if (!match) return null;
+  const value = match[1];
+  return {
+    r: parseInt(value.substring(0, 2), 16),
+    g: parseInt(value.substring(2, 4), 16),
+    b: parseInt(value.substring(4, 6), 16),
+  };
+}
+
+/** WCAG relative luminance (0 = black, 1 = white) for an sRGB channel in the 0-255 range. */
+function channelLuminance(channel255: number): number {
+  const c = channel255 / 255;
+  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+/** WCAG 2.x relative luminance of a `#rrggbb` color. Falls back to mid-gray luminance if malformed. */
+export function relativeLuminance(hex: string): number {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return 0.5;
+  return 0.2126 * channelLuminance(rgb.r) + 0.7152 * channelLuminance(rgb.g) + 0.0722 * channelLuminance(rgb.b);
+}
+
+/** WCAG contrast ratio (1:1 to 21:1) between two `#rrggbb` colors. */
+export function contrastRatio(hexA: string, hexB: string): number {
+  const lumA = relativeLuminance(hexA);
+  const lumB = relativeLuminance(hexB);
+  const lighter = Math.max(lumA, lumB);
+  const darker = Math.min(lumA, lumB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * Picks pure white or pure black text for a *solid* background of `brandHex` (e.g. a primary
+ * button, an avatar, a filled icon chip). For any background lightness, one of
+ * {white-on-bg, black-on-bg} always reaches a contrast ratio of at least ~4.58:1 — the two curves
+ * cross exactly there — so this is a mathematically guaranteed WCAG AA pass (4.5:1 normal text,
+ * 3:1 large text) regardless of which color a tenant picks, without needing per-color tuning.
+ */
+export function getAccessibleTextOnBrand(brandHex: string | null | undefined): '#ffffff' | '#000000' {
+  if (!brandHex || !hexToRgb(brandHex)) return '#ffffff';
+  const whiteContrast = contrastRatio('#ffffff', brandHex);
+  const blackContrast = contrastRatio('#000000', brandHex);
+  return whiteContrast >= blackContrast ? '#ffffff' : '#000000';
+}
+
+function hexToHsl(hex: string): { h: number; s: number; l: number } | null {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return null;
+  const r = rgb.r / 255;
+  const g = rgb.g / 255;
+  const b = rgb.b / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h: number;
+  switch (max) {
+    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+    case g: h = (b - r) / d + 2; break;
+    default: h = (r - g) / d + 4; break;
+  }
+  h /= 6;
+  return { h, s, l };
+}
+
+function hueToRgbChannel(p: number, q: number, t: number): number {
+  let tt = t;
+  if (tt < 0) tt += 1;
+  if (tt > 1) tt -= 1;
+  if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+  if (tt < 1 / 2) return q;
+  if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+  return p;
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  let r: number, g: number, b: number;
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hueToRgbChannel(p, q, h + 1 / 3);
+    g = hueToRgbChannel(p, q, h);
+    b = hueToRgbChannel(p, q, h - 1 / 3);
+  }
+  const toHex = (c: number) => Math.round(Math.min(1, Math.max(0, c)) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+/**
+ * Returns a hue-preserving variant of `brandHex` that reaches at least `minRatio` contrast
+ * against `surfaceHex` — for *text* drawn directly on a page/card surface, or on a light/dark
+ * tint of the brand color (badges, hints), rather than on a solid brand fill. Unlike
+ * `getAccessibleTextOnBrand`, this keeps the tenant's hue recognizable (a lightly-darkened /
+ * lightened version of their brand color) instead of collapsing to plain black/white, at the cost
+ * of needing an explicit search since no single closed-form guarantee applies here. Falls back to
+ * `brandHex` unchanged if the color is malformed, and stops (best-effort) if the ratio still can't
+ * be met at the lightness extreme (a same-hue color always converges to near-black or near-white).
+ */
+export function getAccessibleBrandForeground(
+  brandHex: string | null | undefined,
+  surfaceHex: string,
+  minRatio = 4.5
+): string {
+  if (!brandHex || !hexToRgb(brandHex)) return brandHex ?? '#000000';
+  if (contrastRatio(brandHex, surfaceHex) >= minRatio) return brandHex;
+
+  const hsl = hexToHsl(brandHex);
+  if (!hsl) return brandHex;
+
+  const surfaceIsLight = relativeLuminance(surfaceHex) > 0.5;
+  // Light surface -> darken (walk lightness toward 0). Dark surface -> lighten (toward 1).
+  let lo = surfaceIsLight ? 0 : hsl.l;
+  let hi = surfaceIsLight ? hsl.l : 1;
+  let best = hslToHex(hsl.h, hsl.s, surfaceIsLight ? 0 : 1);
+
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    const candidate = hslToHex(hsl.h, hsl.s, mid);
+    if (contrastRatio(candidate, surfaceHex) >= minRatio) {
+      best = candidate;
+      if (surfaceIsLight) lo = mid; else hi = mid;
+    } else if (surfaceIsLight) {
+      hi = mid;
+    } else {
+      lo = mid;
+    }
+  }
+  return best;
+}

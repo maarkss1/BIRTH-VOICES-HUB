@@ -218,19 +218,21 @@ export function BottomDrawer() {
                 {showAddVar && (
                   <form onSubmit={handleAddVariable} className="p-2 bg-white/5 border border-white/10 rounded-lg mb-2 space-y-2">
                     <div className="flex gap-1">
-                      <input 
-                        type="text" 
-                        placeholder="key" 
-                        value={newVarName} 
-                        onChange={e => setNewVarName(e.target.value)} 
+                      <input
+                        type="text"
+                        placeholder="key"
+                        aria-label="Nome da variável de telemetria"
+                        value={newVarName}
+                        onChange={e => setNewVarName(e.target.value)}
                         className="w-1/2 text-xs p-1 bg-black/20 border border-white/10 rounded outline-none focus:bg-white/10 focus:border-indigo-500/50 text-gray-200 placeholder-gray-600"
                         required
                       />
-                      <input 
-                        type="text" 
-                        placeholder="value" 
-                        value={newVarVal} 
-                        onChange={e => setNewVarVal(e.target.value)} 
+                      <input
+                        type="text"
+                        placeholder="value"
+                        aria-label="Valor da variável de telemetria"
+                        value={newVarVal}
+                        onChange={e => setNewVarVal(e.target.value)}
                         className="w-1/2 text-xs p-1 bg-black/20 border border-white/10 rounded outline-none focus:bg-white/10 focus:border-indigo-500/50 text-gray-200 placeholder-gray-600"
                       />
                     </div>
@@ -504,8 +506,9 @@ export function BottomDrawer() {
 
                 <form onSubmit={handleAiGenerate} className="flex-1 flex flex-col min-h-0 justify-between">
                   <div className="flex-1 min-h-0 bg-black/20 border border-white/10 rounded-lg p-2 flex flex-col">
-                    <textarea 
+                    <textarea
                       placeholder="Ex: Crie um fluxo completo para qualificação de leads com confirmação de CPF via voz e busca de FAQs..."
+                      aria-label="Prompt em linguagem natural para gerar workflow via IA"
                       value={aiPrompt}
                       onChange={e => setAiPrompt(e.target.value)}
                       disabled={isAiLoading}

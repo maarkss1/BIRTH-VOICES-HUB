@@ -57,17 +57,52 @@ SERVE_STATIC_BUILD=true
 
 ## Cenários E2E mínimos
 
-A suíte em `e2e/` cobre no mínimo:
+A suíte em `e2e/` cobre, contra o build compilado real (não contra mocks), no mínimo:
 
 - `GET /api/health`;
 - carregamento da landing page do build;
-- registro de um tenant novo;
+- registro de um tenant novo (`auth.spec.ts`);
 - criação de sessão autenticada via cookie;
 - `GET /api/auth/me` como fonte de verdade da sessão;
 - logout e rejeição subsequente com `401`;
-- login novamente no mesmo tenant.
+- login novamente no mesmo tenant;
+- RBAC admin (`rbac.spec.ts`): um usuário não-admin do mesmo tenant recebe `403` ao chamar uma
+  rota `requireRole(['admin'])` (`GET`/`POST /api/users`) — prova bloqueador #1 de `AGENTS.md` no
+  roteamento real, não só no middleware isolado;
+- isolamento de tenant (`tenant-isolation.spec.ts`): um usuário do tenant A nunca lê nem lista um
+  agente criado no tenant B (`404` no lookup direto, ausente da listagem) — prova bloqueador #2;
+- webhook AtlasGR (`atlasgr-webhook.spec.ts`): a rota `/api/webhook/atlasgr/outbound` é alcançável
+  sem header `Origin` (nunca cai no erro de CSRF) e exige sua própria autenticação por segredo
+  compartilhado, falha fechada quando o segredo não está configurado — prova bloqueadores #3 e #5;
+- Studio/publish gate (`workflow-publish.spec.ts`): um workflow sem nó `start` é recusado no
+  publish real (`422`, permanece `draft`); um workflow válido (`start -> end`) é publicado
+  (`active`); uma edição estrutural subsequente rebaixa o workflow de volta a `draft` — prova
+  bloqueador #13.
 
-O teste de autenticação usa e-mail único por execução para não depender de limpeza manual da base efêmera do CI.
+O teste de autenticação usa e-mail único por execução para não depender de limpeza manual da base
+efêmera do CI.
+
+### Login/registro tem rate limiting real (10 req/60s por IP)
+
+`server.ts` aplica um limite Redis-backed de 10 requisições/60s por IP sobre
+`/api/auth/login`+`/api/auth/register` juntos (ver `SECURITY.md`). A suíte inteira de `e2e/` soma
+hoje ~7 chamadas a essas duas rotas por execução — folga real, mas não generosa. Ao adicionar um
+novo spec que registra/loga múltiplos usuários, conte quantas chamadas a `/api/auth/login` ou
+`/api/auth/register` ele soma ao total da suíte antes de assumir que "mais um `register()`" é de
+graça; um `retries` de CI que dispara em cascata sobre vários specs no mesmo minuto também consome
+esse mesmo orçamento. Rodar `npm run test:e2e` várias vezes em sequência rápida localmente pode
+esgotar a janela e produzir `429` que não é uma regressão do código — é o rate limiter fazendo
+exatamente o que `SECURITY.md` documenta; espere a janela de 60s resetar antes de re-executar.
+
+### Chromium do Playwright em sandbox sem acesso a `cdn.playwright.dev`/Docker Hub
+
+Em um ambiente cujo egress bloqueia `cdn.playwright.dev` (download do browser) e
+`production.cloudfront.docker.com` (imagens Docker Hub para `test:infrastructure`/
+`security:trivy`), `npx playwright install` falha. Se o sandbox já tiver um Chromium do Playwright
+pré-cacheado em outro caminho (revisão diferente da que o `playwright-core` instalado espera),
+aponte `playwright.config.ts` para ele via a variável opcional `PLAYWRIGHT_CHROMIUM_EXECUTABLE`
+(ver comentário no arquivo) — isso nunca altera o comportamento de CI/produção, que não define essa
+variável e continua baixando o browser gerenciado normalmente pelo Playwright.
 
 ## Banco e serviços no CI
 

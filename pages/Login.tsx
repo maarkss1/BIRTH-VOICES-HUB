@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { AtlasLogo } from '../components/design-system';
+import { getAccessibleTextOnBrand } from '../components/design-system/tokens';
 import { useSessionStore } from '../store/useSessionStore';
 
 export default function LoginPage() {
@@ -11,6 +12,14 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
   const fetchSession = useSessionStore((state) => state.fetchSession);
+  const emailId = useId();
+  const passwordId = useId();
+  // `--brand-color` is tenant-controlled (Organization branding) and applied to the DOM by
+  // `App.tsx` regardless of auth state, so it is already readable on this pre-login page. A
+  // hardcoded `text-white` on `bg-brand` fails WCAG contrast the moment a tenant picks a light
+  // brand color — see `getAccessibleTextOnBrand`.
+  const brandColor = useSessionStore((state) => state.brandColor);
+  const accessibleBrandText = getAccessibleTextOnBrand(brandColor);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,8 +71,9 @@ export default function LoginPage() {
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+              <label htmlFor={emailId} className="block text-sm font-medium text-slate-700 mb-1">Email</label>
               <input
+                id={emailId}
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
@@ -72,8 +82,9 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Senha</label>
+              <label htmlFor={passwordId} className="block text-sm font-medium text-slate-700 mb-1">Senha</label>
               <input
+                id={passwordId}
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
@@ -84,7 +95,8 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-brand hover:opacity-90 text-white font-bold py-3 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full bg-brand hover:opacity-90 font-bold py-3 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              style={{ color: accessibleBrandText }}
             >
               {loading ? 'Entrando...' : <>Entrar <ArrowRight className="h-4 w-4" /></>}
             </button>
