@@ -23,6 +23,19 @@ export interface User {
   createdAt?: string;
 }
 
+/** The shape returned by `GET /auth/me`: the JWT's `TokenPayload` claims (`id`, `email`, `role`, `tenantId` — notably narrower than `User`, e.g. no `companyName`/`createdAt`) plus `permissions`, resolved live against the database rather than trusted from the token (see `src/controllers/auth.controller.ts`). `permissions` is UX-only information for the client to decide what to show — every permission-gated action is still enforced authoritatively server-side. */
+export interface AuthenticatedUser {
+  /** @format uuid */
+  id?: string;
+  /** @format email */
+  email?: string;
+  role?: "admin" | "user";
+  /** @format uuid */
+  tenantId?: string;
+  /** Effective permission keys for the caller's role, resolved live (see `getPermissionsForRoleName`). */
+  permissions?: string[];
+}
+
 export interface Organization {
   /** @format uuid */
   id?: string;
@@ -126,6 +139,28 @@ export interface AiConsent {
   /** @format date-time */
   grantedAt?: string | null;
   grantedByUserId?: string | null;
+}
+
+/** One entry from the tenant's audit trail (`writeAuditLog()` writes these; see `src/services/auditLogService.ts`). `action` is a free-form event code, not a closed enum — new call sites can introduce new values (e.g. `USER_CREATE_BY_ADMIN`, `USER_LOGIN`, `CALL_LOG_CREATE`) without a spec change. */
+export interface AuditLogEntry {
+  /** @format uuid */
+  id?: string;
+  /**
+   * Id of the user who performed the action, if the action was user-initiated.
+   * @format uuid
+   */
+  userId?: string | null;
+  /**
+   * Email of the acting user at read time, resolved via a join; `null` if the user no longer exists.
+   * @format email
+   */
+  actorEmail?: string | null;
+  /** Machine-readable event code (e.g. `USER_LOGIN`, `CALL_LOG_CREATE`). */
+  action?: string;
+  /** Free-form JSON payload specific to `action`. */
+  details?: object | null;
+  /** @format date-time */
+  timestamp?: string;
 }
 
 export interface ErrorResponse {
@@ -486,7 +521,8 @@ export class Api<
     getAuth: (params: RequestParams = {}) =>
       this.request<
         {
-          user?: User;
+          /** The shape returned by `GET /auth/me`: the JWT's `TokenPayload` claims (`id`, `email`, `role`, `tenantId` — notably narrower than `User`, e.g. no `companyName`/`createdAt`) plus `permissions`, resolved live against the database rather than trusted from the token (see `src/controllers/auth.controller.ts`). `permissions` is UX-only information for the client to decide what to show — every permission-gated action is still enforced authoritatively server-side. */
+          user?: AuthenticatedUser;
         },
         ErrorResponse
       >({
@@ -2087,6 +2123,52 @@ export class Api<
       >({
         path: `/users/${id}/anonymize`,
         method: "POST",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+  };
+  auditLog = {
+    /**
+     * @description Requires the `admin` role — same authorization level as `GET /users`, since audit entries can reveal sensitive operational history. Tenant-scoped and paginated; ordered newest-first.
+     *
+     * @tags AuditLog
+     * @name AuditLogList
+     * @summary List the tenant's audit trail
+     * @request GET:/audit-log
+     * @secure
+     */
+    auditLogList: (
+      query?: {
+        /**
+         * 1-based page number. Non-numeric or out-of-range values fall back to `1`.
+         * @min 1
+         * @default 1
+         */
+        page?: number;
+        /**
+         * Entries per page, clamped to `[1, 100]`. Non-numeric values fall back to the default.
+         * @min 1
+         * @max 100
+         * @default 20
+         */
+        pageSize?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<
+        {
+          items?: AuditLogEntry[];
+          page?: number;
+          pageSize?: number;
+          total?: number;
+          totalPages?: number;
+        },
+        ErrorResponse
+      >({
+        path: `/audit-log`,
+        method: "GET",
+        query: query,
         secure: true,
         format: "json",
         ...params,

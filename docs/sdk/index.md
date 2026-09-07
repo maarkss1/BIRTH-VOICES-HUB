@@ -72,12 +72,35 @@ async function callLead(agentId: string, targetNumber: string) {
 }
 ```
 
+### Reading the caller's effective permissions
+
+```typescript
+async function whoAmI() {
+  const { data } = await api.auth.getAuth();
+  // permissions is resolved live server-side (never trusted from the JWT) — use it only to
+  // decide what to show in the UI. Every permission-gated action is still enforced
+  // authoritatively server-side; do not treat this array as an authorization check.
+  console.log(data.user?.role, data.user?.permissions);
+}
+```
+
+### Paging the audit trail (admin-only)
+
+```typescript
+async function listAuditLog(page = 1) {
+  const { data } = await api.auditLog.auditLogList({ page, pageSize: 20 });
+  console.log(`page ${data.page}/${data.totalPages}`, data.items?.length, 'of', data.total);
+}
+```
+
 ## Current limitations (honest state, not aspirational)
 
 - **No automatic retries.** `swagger-typescript-api`'s generated `HttpClient` makes a single
   `fetch` per call; a caller that needs retry-on-429/5xx must wrap the call itself today.
-- **No pagination.** None of the current endpoints paginate (`GET /agents`, `GET /call-logs`,
-  etc. all return the tenant's full list) — there is nothing for the SDK to paginate yet.
+- **Pagination exists on exactly one endpoint.** `GET /audit-log` is `page`/`pageSize`-paginated
+  (`{items, page, pageSize, total, totalPages}`); every other list endpoint (`GET /agents`,
+  `GET /call-logs`, etc.) still returns the tenant's full list — there is nothing else for the
+  SDK to paginate yet.
 - **Types come straight from the OpenAPI schemas**, which are intentionally loose on Prisma
   `Json` fields (`Workflow.nodes`/`edges`, `Agent.configuration`, `Session.metadata`) — see the
   schema `description` fields in `openapi.yaml` for why, and `docs/patterns/` for the real shape
