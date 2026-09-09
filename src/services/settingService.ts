@@ -1,4 +1,5 @@
 import * as settingRepository from '../repositories/settingRepository.js';
+import * as tenantAiConsentRepository from '../repositories/tenantAiConsentRepository.js';
 
 const DEFAULT_SETTINGS = {
   theme: 'light',
@@ -80,13 +81,18 @@ export function resetChecklist(tenantId: string, userId: string) {
 // --- AI provider consent (LGPD) ---
 //
 // Consent for sending tenant/contact data to an external AI provider (OpenAI, Anthropic,
-// Gemini, ElevenLabs) via LLMGateway. There is no dedicated Prisma column for this yet — see
-// .agents/handoffs/onda-2/04-para-01-ai-consent-schema.md, opened by Agente 04 recommending a
-// first-class `TenantAiConsent` model with proper audit columns (grantedAt, revokedAt, actor,
-// consentVersion). Until that lands, the tenant-scoped generic `Setting` table (already used for
-// brand color, onboarding checklist, voice runtime config) is the real, working, tenant-isolated
-// store — not a stub — so LLMGateway can enforce this today instead of only after a migration.
-const AI_CONSENT_KEY = 'ai_provider_consent';
+// Gemini, ElevenLabs) via LLMGateway. Backed by the dedicated `TenantAiConsent` model (one row
+// per tenant, `granted: false` as a safe default) added by Agente 01 — see
+// .agents/handoffs/onda-4/01-para-04-tenant-ai-consent-model-pronto.md, resolving the earlier
+// .agents/handoffs/onda-2/04-para-01-ai-consent-schema.md recommendation. Previously this lived
+// on the generic tenant-scoped `Setting` table under the `ai_provider_consent` key; that
+// mechanism was real and functional, not a stub, but the dedicated model gives proper typed
+// audit columns (grantedAt, revokedAt, actor, consentVersion) instead of an opaque JSON blob.
+//
+// NOTE: tenants that granted/revoked consent via the old `Setting` mechanism before this change
+// are NOT backfilled into `TenantAiConsent` here — see
+// .agents/handoffs/onda-4/04-para-01-legacy-ai-consent-setting-backfill.md for that follow-up,
+// opened for Agente 01 (schema/data owner) rather than migrated unilaterally.
 
 export interface AiConsentRecord {
   granted: boolean;
@@ -102,33 +108,34 @@ const NO_CONSENT_RECORD: AiConsentRecord = {
   grantedByUserId: null,
 };
 
+function toAiConsentRecord(row: {
+  granted: boolean;
+  grantedAt: Date | null;
+  revokedAt: Date | null;
+  grantedByUserId: string | null;
+}): AiConsentRecord {
+  return {
+    granted: row.granted,
+    grantedAt: row.grantedAt?.toISOString() ?? null,
+    revokedAt: row.revokedAt?.toISOString() ?? null,
+    grantedByUserId: row.grantedByUserId,
+  };
+}
+
 export async function getAiConsent(tenantId: string): Promise<AiConsentRecord> {
-  const row = await settingRepository.findSetting(tenantId, null, AI_CONSENT_KEY);
+  const row = await tenantAiConsentRepository.findByTenantId(tenantId);
   if (!row) return NO_CONSENT_RECORD;
-  return { ...NO_CONSENT_RECORD, ...(row.value as Partial<AiConsentRecord>) };
+  return toAiConsentRecord(row);
 }
 
 export async function grantAiConsent(tenantId: string, actorUserId: string): Promise<AiConsentRecord> {
-  const record: AiConsentRecord = {
-    granted: true,
-    grantedAt: new Date().toISOString(),
-    revokedAt: null,
-    grantedByUserId: actorUserId,
-  };
-  await settingRepository.upsertSetting(tenantId, null, AI_CONSENT_KEY, record);
-  return record;
+  const row = await tenantAiConsentRepository.grant(tenantId, new Date(), actorUserId);
+  return toAiConsentRecord(row);
 }
 
 export async function revokeAiConsent(tenantId: string, actorUserId: string): Promise<AiConsentRecord> {
-  const existing = await getAiConsent(tenantId);
-  const record: AiConsentRecord = {
-    ...existing,
-    granted: false,
-    revokedAt: new Date().toISOString(),
-    grantedByUserId: actorUserId,
-  };
-  await settingRepository.upsertSetting(tenantId, null, AI_CONSENT_KEY, record);
-  return record;
+  const row = await tenantAiConsentRepository.revoke(tenantId, new Date(), actorUserId);
+  return toAiConsentRecord(row);
 }
 
 export async function getBrandColor(tenantId: string | null) {

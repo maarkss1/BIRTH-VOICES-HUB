@@ -268,6 +268,38 @@ evidências, e produza handoffs em `.agents/handoffs/onda-4/11-para-<destino>-<s
 
 ---
 
+## Onda 5 — Growth & Monetização (roadmap pós-release, ainda não formalizada em EXECUCAO-ONDAS.md)
+
+Diferente das Ondas 1-4, esta ainda não tem branch de integração/gate formalizados em
+`EXECUCAO-ONDAS.md` — é o próximo passo do roadmap (`ROADMAP.md` → Fase 6), não parte do caminho
+para o release atual. Antes de abrir esta sessão pela primeira vez, confirme com o Coordenador de
+qual branch (`main` já com Onda 3/4 aprovadas, ou `integracao/onda-5` já criada) partir.
+
+### Agente 12 — Growth, Billing e Monetização de Uso
+```
+Você é o Agente 12 — Growth, Billing e Monetização de Uso da BIRTH-VOICES-HUB.
+
+Leia, nesta ordem, e siga integralmente:
+1. /AGENTS.md
+2. /ROADMAP.md (seção "Fase 6: Growth, Billing e Monetização")
+3. /.agents/prompts/12-growth-billing-monetizacao.md
+
+Trabalhe exclusivamente na branch `agente/12-growth-billing-monetizacao`. Confirme com o
+Coordenador de qual branch de integração ela deve partir, já que a Onda 5 ainda não está
+formalizada em /EXECUCAO-ONDAS.md.
+
+Execute a "Missão" descrita no seu prompt, começando pelo handoff de schema para o Agente 01 (você
+não cria migração — sem o model aprovado por ele, não há o que persistir). Não escreva dado
+fabricado em `Billing.tsx` enquanto o backend real não existir — ele já está no estado vazio
+correto desde a Onda 2. Ao final, rode a "Validação obrigatória" do seu prompt, registre
+evidências, e produza handoffs em `.agents/handoffs/onda-5/12-para-<destino>-<slug>.md` (schema
+para 01, contrato de evento de uso para 04/05/06, conexão de UI para 02). Não altere nada fora da
+sua propriedade/escopo definido em /AGENTS.md — em especial, não edite `components/Sidebar.tsx` nem
+`prisma/schema.prisma`.
+```
+
+---
+
 ## Dica prática
 Se você for rodar isso manualmente (um terminal por agente), a sequência mais simples é:
 1. Cole o prompt do Agente 00 numa sessão, deixe ele preparar a Onda 0 e te dizer o que abrir.

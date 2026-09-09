@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { auth } from '../lib/auth';
 import { AtlasLogo } from '../components/design-system';
+import { getAccessibleTextOnBrand } from '../components/design-system/tokens';
 import { useSessionStore } from '../store/useSessionStore';
 
 export default function RegisterPage() {
@@ -13,6 +14,15 @@ export default function RegisterPage() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
   const fetchSession = useSessionStore((state) => state.fetchSession);
+  const companyNameId = useId();
+  const emailId = useId();
+  const passwordId = useId();
+  // `--brand-color` is tenant-controlled (Organization branding) and applied to the DOM by
+  // `App.tsx` regardless of auth state, so it is already readable on this pre-login page. A
+  // hardcoded `text-white` on `bg-brand` fails WCAG contrast the moment a tenant picks a light
+  // brand color — see `getAccessibleTextOnBrand`.
+  const brandColor = useSessionStore((state) => state.brandColor);
+  const accessibleBrandText = getAccessibleTextOnBrand(brandColor);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,8 +76,9 @@ export default function RegisterPage() {
 
           <form onSubmit={handleRegister} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nome da Empresa</label>
+              <label htmlFor={companyNameId} className="block text-sm font-medium text-slate-700 mb-1">Nome da Empresa</label>
               <input
+                id={companyNameId}
                 type="text"
                 value={companyName}
                 onChange={e => setCompanyName(e.target.value)}
@@ -77,8 +88,9 @@ export default function RegisterPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Email Profissional</label>
+              <label htmlFor={emailId} className="block text-sm font-medium text-slate-700 mb-1">Email Profissional</label>
               <input
+                id={emailId}
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
@@ -87,8 +99,9 @@ export default function RegisterPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Senha</label>
+              <label htmlFor={passwordId} className="block text-sm font-medium text-slate-700 mb-1">Senha</label>
               <input
+                id={passwordId}
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
@@ -100,7 +113,8 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-brand hover:opacity-90 text-white font-bold py-3 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full bg-brand hover:opacity-90 font-bold py-3 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              style={{ color: accessibleBrandText }}
             >
               {loading ? 'Criando...' : <>Começar Grátis <ArrowRight className="h-4 w-4" /></>}
             </button>

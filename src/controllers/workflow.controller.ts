@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { saveWorkflowSchema } from '../validators/index.js';
-import { getWorkflow, saveWorkflow, updateWorkflow, removeWorkflow, getWorkflowHistory, restoreWorkflowVersion, duplicateWorkflow, publishWorkflow, NotFoundError, ValidationFailedError } from '../services/workflowService.js';
+import { getWorkflow, saveWorkflow, updateWorkflow, removeWorkflow, getWorkflowHistory, restoreWorkflowVersion, duplicateWorkflow, publishWorkflow, listWorkflowVersions, rollbackToVersion, NotFoundError, ValidationFailedError } from '../services/workflowService.js';
 import { writeAuditLog } from '../services/audit.js';
 
 export async function getWorkflowHandler(req: Request, res: Response) {
@@ -72,6 +72,47 @@ export async function publishWorkflowHandler(req: Request, res: Response) {
       // 422: request was well-formed, but the workflow content fails ValidationEngine. The
       // frontend (TopBar/Inspector) must surface `issues` verbatim, never treat this as a
       // generic failure and never retry-as-success.
+      return res.status(422).json({ error: err.message, issues: err.issues });
+    }
+    if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });
+    throw err;
+  }
+}
+
+// GET /workflow/:id/versions — published-version archive for one workflow, tenant-scoped by
+// `req.tenantId` (never the raw `:id` param alone — see workflowRepository.findWorkflowByIdForTenant
+// and AGENTS.md §15). Returns 404 rather than an empty tenant-agnostic list when the workflow
+// belongs to another tenant or does not exist, so cross-tenant existence can never be inferred
+// from the response shape.
+export async function listWorkflowVersionsHandler(req: Request, res: Response) {
+  try {
+    const versions = await listWorkflowVersions(req.tenantId!, String(req.params.id));
+    res.json({ versions });
+  } catch (err) {
+    if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });
+    throw err;
+  }
+}
+
+// POST /workflow/:id/versions/:version/rollback — republishes an archived version's content as a
+// brand new version. Goes through the same publish gates as publishWorkflowHandler and maps a
+// gate failure to the same 422 shape.
+export async function rollbackWorkflowVersionHandler(req: Request, res: Response) {
+  const versionParam = Number(req.params.version);
+  if (!Number.isInteger(versionParam) || versionParam < 1) {
+    return res.status(400).json({ error: 'Versão inválida.' });
+  }
+
+  try {
+    const workflow = await rollbackToVersion(req.tenantId!, req.user!.id, String(req.params.id), versionParam);
+    writeAuditLog(req.tenantId, req.user!.id, 'WORKFLOW_ROLLBACK', {
+      workflowId: workflow.id,
+      rolledBackToVersion: versionParam,
+      newVersion: workflow.version,
+    });
+    res.json({ success: true, workflow });
+  } catch (err) {
+    if (err instanceof ValidationFailedError) {
       return res.status(422).json({ error: err.message, issues: err.issues });
     }
     if (err instanceof NotFoundError) return res.status(404).json({ error: err.message });

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -80,5 +81,55 @@ describe('CommandPalette', () => {
 
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes dialog and combobox/listbox semantics for assistive tech', () => {
+    renderPalette(true);
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+
+    const input = screen.getByRole('combobox');
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    expect(input.getAttribute('aria-controls')).toBe(screen.getByRole('listbox').id);
+
+    expect(screen.getAllByRole('option').length).toBeGreaterThan(0);
+  });
+
+  it('marks the highlighted result as the active option and moves it on ArrowDown', async () => {
+    const user = userEvent.setup();
+    renderPalette(true);
+
+    const options = screen.getAllByRole('option');
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+
+    await user.keyboard('{ArrowDown}');
+    const optionsAfter = screen.getAllByRole('option');
+    expect(optionsAfter[0]).toHaveAttribute('aria-selected', 'false');
+    expect(optionsAfter[1]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('restores focus to the element that triggered it when it closes', async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <MemoryRouter>
+          <button onClick={() => setOpen(true)}>Abrir paleta</button>
+          <CommandPalette isOpen={open} onClose={() => setOpen(false)} />
+        </MemoryRouter>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    const trigger = screen.getByRole('button', { name: 'Abrir paleta' });
+    trigger.focus();
+    await user.click(trigger);
+
+    await screen.findByRole('dialog');
+    await user.keyboard('{Escape}');
+
+    await vi.waitFor(() => expect(trigger).toHaveFocus());
   });
 });

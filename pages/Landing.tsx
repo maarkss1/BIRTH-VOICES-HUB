@@ -11,10 +11,18 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../components/design-system/ThemeContext';
 import { Card, Button, Badge, Progress, useToast, ToastContainer, AtlasLogo } from '../components/design-system';
+import { getAccessibleTextOnBrand } from '../components/design-system/tokens';
+import { useSessionStore } from '../store/useSessionStore';
 
 export default function LandingPage() {
   const { theme, setTheme } = useTheme();
   const { toasts, showToast } = useToast();
+  // `--brand-color` is tenant-controlled (Organization branding) and applied to the DOM by
+  // `App.tsx` regardless of auth state, so it is already readable on this pre-login marketing
+  // page. A hardcoded `text-white` on `bg-brand` fails WCAG contrast the moment a tenant picks a
+  // light brand color — see `getAccessibleTextOnBrand`.
+  const brandColor = useSessionStore((state) => state.brandColor);
+  const accessibleBrandText = getAccessibleTextOnBrand(brandColor);
 
   // Navigation and Interactive states
   const [activeFAQ, setActiveFAQ] = useState<number | null>(null);
@@ -515,7 +523,10 @@ export default function LandingPage() {
                         <div className="flex-1 bg-slate-50 dark:bg-slate-950 rounded-xl p-3 border border-slate-250 dark:border-slate-850 overflow-y-auto space-y-3 h-48 max-h-48 scrollbar-thin">
                           {chatMessages.map((msg, i) => (
                             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                              <div className={`p-2.5 rounded-xl max-w-[85%] text-[11px] leading-relaxed font-semibold ${msg.role === 'user' ? 'bg-brand text-white' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-800'}`}>
+                              <div
+                                className={`p-2.5 rounded-xl max-w-[85%] text-[11px] leading-relaxed font-semibold ${msg.role === 'user' ? 'bg-brand' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-800'}`}
+                                style={msg.role === 'user' ? { color: accessibleBrandText } : undefined}
+                              >
                                 {msg.text}
                               </div>
                             </div>
@@ -937,7 +948,10 @@ export default function LandingPage() {
                       : 'bg-transparent border-transparent text-slate-500 hover:bg-white/40 dark:hover:bg-slate-900/40'
                   }`}
                 >
-                  <div className={`p-2 rounded-lg ${activeUseCase === i ? 'bg-brand text-white' : 'bg-slate-200/60 dark:bg-slate-800 text-slate-555'}`}>
+                  <div
+                    className={`p-2 rounded-lg ${activeUseCase === i ? 'bg-brand' : 'bg-slate-200/60 dark:bg-slate-800 text-slate-555'}`}
+                    style={activeUseCase === i ? { color: accessibleBrandText } : undefined}
+                  >
                     {useCase.icon}
                   </div>
                   <div className="text-xs">
@@ -1478,10 +1492,10 @@ export default function LandingPage() {
             </div>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-2">
-              <Link 
-                to="/login" 
-                className="px-8 py-4 bg-brand hover:opacity-90 text-white rounded-xl font-bold text-sm transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-                style={{ backgroundColor: 'var(--brand-color)', color: 'white' }}
+              <Link
+                to="/login"
+                className="px-8 py-4 bg-brand hover:opacity-90 rounded-xl font-bold text-sm transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+                style={{ backgroundColor: 'var(--brand-color)', color: accessibleBrandText }}
               >
                 Criar Conta Corporativa
                 <ArrowRight className="h-4.5 w-4.5" />

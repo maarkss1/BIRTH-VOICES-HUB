@@ -26,7 +26,7 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('agentRepository.listAgentsForTenant', () => {
   it('queries by tenant, excludes soft-deleted rows, orders by createdAt desc', async () => {
-    vi.mocked(prisma.agent.findMany).mockResolvedValue([{ id: 'a1' }] as any);
+    vi.mocked(prisma.agent.findMany).mockResolvedValue([{ id: 'a1' }] as unknown as import("@prisma/client").Agent[]);
 
     const result = await listAgentsForTenant('tenant-1');
 
@@ -40,7 +40,7 @@ describe('agentRepository.listAgentsForTenant', () => {
 
 describe('agentRepository.getAgent', () => {
   it('scopes lookup by id and tenant, excludes soft-deleted rows', async () => {
-    vi.mocked(prisma.agent.findFirst).mockResolvedValue({ id: 'a1' } as any);
+    vi.mocked(prisma.agent.findFirst).mockResolvedValue({ id: 'a1' } as unknown as import("@prisma/client").Agent);
 
     const result = await getAgent('a1', 'tenant-1');
 
@@ -53,7 +53,7 @@ describe('agentRepository.getAgent', () => {
 
 describe('agentRepository.createAgent', () => {
   it('creates an agent with provided configuration', async () => {
-    vi.mocked(prisma.agent.create).mockResolvedValue({ id: 'a1' } as any);
+    vi.mocked(prisma.agent.create).mockResolvedValue({ id: 'a1' } as unknown as import("@prisma/client").Agent);
 
     const result = await createAgent('tenant-1', 'user-1', {
       name: 'Bot',
@@ -74,7 +74,7 @@ describe('agentRepository.createAgent', () => {
   });
 
   it('defaults configuration to an empty object when omitted', async () => {
-    vi.mocked(prisma.agent.create).mockResolvedValue({ id: 'a2' } as any);
+    vi.mocked(prisma.agent.create).mockResolvedValue({ id: 'a2' } as unknown as import("@prisma/client").Agent);
 
     await createAgent('tenant-1', 'user-1', { name: 'Bot', model: 'gpt-4' });
 
@@ -92,7 +92,7 @@ describe('agentRepository.createAgent', () => {
 
 describe('agentRepository.updateAgent', () => {
   it('includes only the fields provided in the update payload', async () => {
-    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 1 } as unknown as { count: number });
 
     const result = await updateAgent('a1', 'tenant-1', { name: 'New Name' });
 
@@ -104,7 +104,7 @@ describe('agentRepository.updateAgent', () => {
   });
 
   it('builds an empty update payload when no fields are provided', async () => {
-    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 0 } as unknown as { count: number });
 
     await updateAgent('a1', 'tenant-1', {});
 
@@ -115,7 +115,7 @@ describe('agentRepository.updateAgent', () => {
   });
 
   it('includes all fields when all are provided', async () => {
-    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 1 } as unknown as { count: number });
 
     await updateAgent('a1', 'tenant-1', { name: 'N', model: 'M', configuration: { a: 1 } });
 
@@ -128,23 +128,24 @@ describe('agentRepository.updateAgent', () => {
 
 describe('agentRepository.deleteAgentForTenant', () => {
   it('soft-deletes by setting deletedAt, scoped to id and tenant', async () => {
-    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.agent.updateMany).mockResolvedValue({ count: 1 } as unknown as { count: number });
     const before = Date.now();
 
     const result = await deleteAgentForTenant('a1', 'tenant-1');
 
     expect(prisma.agent.updateMany).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(prisma.agent.updateMany).mock.calls[0][0] as any;
+    const call = vi.mocked(prisma.agent.updateMany).mock.calls[0][0] as unknown as import("@prisma/client").Prisma.AgentUpdateManyArgs;
     expect(call.where).toEqual({ id: 'a1', tenantId: 'tenant-1' });
     expect(call.data.deletedAt).toBeInstanceOf(Date);
-    expect(call.data.deletedAt.getTime()).toBeGreaterThanOrEqual(before);
+        const deletedAt = call.data.deletedAt as Date;
+    expect(deletedAt.getTime()).toBeGreaterThanOrEqual(before);
     expect(result).toEqual({ count: 1 });
   });
 });
 
 describe('agentRepository.findAgentByPhoneNumber', () => {
   it('queries by phone number, excludes soft-deleted rows', async () => {
-    vi.mocked(prisma.agent.findFirst).mockResolvedValue({ id: 'a1' } as any);
+    vi.mocked(prisma.agent.findFirst).mockResolvedValue({ id: 'a1' } as unknown as import("@prisma/client").Agent);
 
     const result = await findAgentByPhoneNumber('+15551234567');
 
@@ -157,7 +158,7 @@ describe('agentRepository.findAgentByPhoneNumber', () => {
 
 describe('agentRepository.findAgentById', () => {
   it('queries by id only, excludes soft-deleted rows', async () => {
-    vi.mocked(prisma.agent.findFirst).mockResolvedValue({ id: 'a1' } as any);
+    vi.mocked(prisma.agent.findFirst).mockResolvedValue({ id: 'a1' } as unknown as import("@prisma/client").Agent);
 
     const result = await findAgentById('a1');
 

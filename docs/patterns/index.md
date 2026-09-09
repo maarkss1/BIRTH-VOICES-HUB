@@ -2,6 +2,10 @@
 
 Birth Voices Hub strictly adheres to several software design patterns to maintain a clean, scalable codebase.
 
+See also: [Workflow Execution Contract](./workflow-execution-contract.md) — the Studio ↔ Voice
+Runtime contract for `Workflow.nodes`/`edges` (which node types execute for real, the
+publish/validation gate, `StudioEdge` routing).
+
 ## Clean Architecture & Dependency Rules
 
 Dependencies must point inward.

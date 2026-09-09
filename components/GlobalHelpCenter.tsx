@@ -5,6 +5,8 @@ import {
   Lightbulb, ShieldCheck
 } from 'lucide-react';
 import { Card, Button, Spinner } from './design-system';
+import { getAccessibleTextOnBrand } from './design-system/tokens';
+import { useSessionStore } from '../store/useSessionStore';
 import { logger } from '../lib/logger';
 
 interface Message {
@@ -15,6 +17,10 @@ interface Message {
 
 export function GlobalHelpCenter() {
   const location = useLocation();
+  // `--brand-color` is tenant-controlled, so a hardcoded `text-white` on `bg-brand` (chat bubble,
+  // send button) can fail WCAG contrast for a light tenant color — see design-system/tokens.ts.
+  const brandColor = useSessionStore((state) => state.brandColor);
+  const accessibleBrandText = getAccessibleTextOnBrand(brandColor);
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'chat' | 'docs' | 'shortcuts'>('chat');
   
@@ -129,14 +135,14 @@ export function GlobalHelpCenter() {
       {/* Floating Sparkly Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 p-3 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-full shadow-2xl hover:scale-105 active:scale-95 transition-all border border-slate-850 dark:border-slate-100 cursor-pointer"
-        style={{ backgroundColor: 'var(--brand-color)' }}
+        className="flex items-center gap-2 p-3 rounded-full shadow-2xl hover:scale-105 active:scale-95 transition-all border border-slate-850 dark:border-slate-100 cursor-pointer"
+        style={{ backgroundColor: 'var(--brand-color)', color: accessibleBrandText }}
       >
-        <Sparkles className="h-5 w-5 text-white animate-bounce" />
+        <Sparkles className="h-5 w-5 animate-bounce" />
         {isOpen ? (
-          <span className="text-xs font-bold text-white pr-2">Fechar Catarina</span>
+          <span className="text-xs font-bold pr-2">Fechar Catarina</span>
         ) : (
-          <span className="text-xs font-bold text-white pr-2">Ajuda Catarina AI</span>
+          <span className="text-xs font-bold pr-2">Ajuda Catarina AI</span>
         )}
       </button>
 
@@ -209,11 +215,14 @@ export function GlobalHelpCenter() {
                         CT
                       </div>
                     )}
-                    <div className={`p-2.5 rounded-xl max-w-[80%] text-xs font-medium leading-relaxed ${
-                      m.sender === 'user' 
-                        ? 'bg-brand text-white' 
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-850 dark:text-slate-150'
-                    }`}>
+                    <div
+                      className={`p-2.5 rounded-xl max-w-[80%] text-xs font-medium leading-relaxed ${
+                        m.sender === 'user'
+                          ? 'bg-brand'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-850 dark:text-slate-150'
+                      }`}
+                      style={m.sender === 'user' ? { color: accessibleBrandText } : undefined}
+                    >
                       {m.text}
                     </div>
                   </div>
@@ -239,14 +248,16 @@ export function GlobalHelpCenter() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder="Escreva sua dúvida técnica..."
+                  aria-label="Escreva sua dúvida técnica"
                   className="flex-1 px-3.5 py-2 border rounded-full text-xs bg-white text-slate-900 border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
                 />
                 <button
                   type="submit"
-                  className="p-2 rounded-full bg-brand text-white hover:scale-105 active:scale-95 transition-all cursor-pointer"
-                  style={{ backgroundColor: 'var(--brand-color)' }}
+                  aria-label="Enviar mensagem"
+                  className="p-2 rounded-full hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                  style={{ backgroundColor: 'var(--brand-color)', color: accessibleBrandText }}
                 >
-                  <Send className="h-4 w-4" />
+                  <Send aria-hidden="true" className="h-4 w-4" />
                 </button>
               </form>
             </div>

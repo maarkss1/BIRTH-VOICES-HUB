@@ -1,0 +1,198 @@
+{
+  "uid": "otel-pipeline-health",
+  "title": "OTel Pipeline Health",
+  "description": "Real signal from the otel-collector's own internal telemetry (Prometheus job otel-collector-internal, port 8888) plus live trace search against Tempo. server.ts/lib/otelInitializer.ts exports traces via OTLP on every request — confirmed flowing end-to-end historically. As of .agents/handoffs/onda-4/0c9eff7 (Agente 04), lib/otelInitializer.ts also registers a real metricReader (PeriodicExportingMetricReader/OTLPMetricExporter) and logRecordProcessor (BatchLogRecordProcessor/OTLPLogExporter) pointed at the same collector endpoint, and infrastructure/observability/otel-collector.yml already has receivers+pipelines wired for metrics (-> prometheus exporter, port 9464) and logs (-> otlphttp/loki) — reviewed and confirmed by Agente 10 in .agents/handoffs/onda-4/04-para-10-dashboard-metrics-logs-reais.md. That review could NOT bring up docker-compose.opensource.yml in this environment (Docker Hub/quay.io/GitHub image and binary pulls are blocked by egress policy — 403 on every registry tried, not a transient failure) to confirm data actually lands in Prometheus/Loki, so the 'App Metrics (OTLP)' and 'Application Logs' panels below are NOT yet marked as carrying live data — per AGENTS.md §14/§17 this is reported as an unresolved environment limitation, not a false 'active' claim.",
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "tags": ["birth-voices", "observability", "otel"],
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "OTel Collector — Trace Pipeline (real, live)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Spans received/sec (app -> collector, OTLP)",
+      "description": "rate(otelcol_receiver_accepted_spans_total[5m]) — increases on every real request handled by the app, since lib/otelInitializer.ts exports a span per request via OTLP to this collector.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(otelcol_receiver_accepted_spans_total{job=\"otel-collector-internal\"}[5m]))",
+          "legendFormat": "accepted spans/sec",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(otelcol_receiver_refused_spans_total{job=\"otel-collector-internal\"}[5m]))",
+          "legendFormat": "refused spans/sec",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Spans exported to Tempo/sec vs. failures/sec",
+      "description": "rate(otelcol_exporter_sent_spans_total[5m]) and rate(otelcol_exporter_send_failed_spans_total[5m]) — a sustained non-zero failure rate means Tempo is unreachable or rejecting spans, which the app itself has no visibility into (fire-and-forget OTLP export).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(otelcol_exporter_sent_spans_total{job=\"otel-collector-internal\"}[5m])) by (exporter)",
+          "legendFormat": "sent — {{exporter}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(otelcol_exporter_send_failed_spans_total{job=\"otel-collector-internal\"}[5m])) by (exporter)",
+          "legendFormat": "failed — {{exporter}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Exporter queue size (Tempo)",
+      "description": "otelcol_exporter_queue_size — a queue that keeps growing means the collector is falling behind Tempo; investigate before spans start getting dropped.",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(otelcol_exporter_queue_size{job=\"otel-collector-internal\"})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Collector uptime",
+      "description": "otelcol_process_uptime_seconds — resets to (near) zero on every collector restart/crash.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(otelcol_process_uptime_seconds{job=\"otel-collector-internal\"})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Collector target up",
+      "description": "up{job=\"otel-collector-internal\"} — 1 means Prometheus successfully scraped the collector's self-metrics on the last interval, 0 means the collector is down or unreachable.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(up{job=\"otel-collector-internal\"})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Recent Traces (Tempo — real data once the app has served requests)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Last 20 traces",
+      "description": "TraceQL search against Tempo for every trace received via the OTLP pipeline above. Empty until the app has handled at least one request after this stack was started.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{}",
+          "limit": 20,
+          "tableType": "traces",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "App Metrics (OTLP) — instrumented in code, live data not yet confirmed in this environment",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "collapsed": false
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Custom app metrics forwarded via otel-collector's prometheus exporter (port 9464)",
+      "description": "lib/otelInitializer.ts now registers a real metricReader (PeriodicExportingMetricReader + OTLPMetricExporter, 10s interval) instead of a no-op MeterProvider, and otel-collector.yml's metrics pipeline (receivers: [otlp], exporters: [prometheus]) is already wired to receive it — see .agents/handoffs/onda-4/04-para-10-dashboard-metrics-logs-reais.md. This panel will surface real series automatically the first time the app runs against a real otel-collector with traffic flowing; it still shows no data here because this environment could not pull the otel-collector/Prometheus images (Docker Hub and quay.io both return 403 under this session's egress policy) to run docker-compose.opensource.yml and prove the metric actually lands in Prometheus. No fabricated number is shown per AGENTS.md §14.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "{job=\"otel-collector-app-metrics\"}",
+          "legendFormat": "{{__name__}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "Application Logs (Loki) — instrumented in code, live data not yet confirmed in this environment",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "collapsed": false
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "Logs forwarded via otel-collector's logs pipeline (OTLP -> Loki)",
+      "description": "src/lib/logger.ts now bridges pino output into the OTel Logs API, and lib/otelInitializer.ts registers a real logRecordProcessor (BatchLogRecordProcessor + OTLPLogExporter) that turns that bridge from a no-op into a live OTLP export; otel-collector.yml's logs pipeline (receivers: [otlp], exporters: [otlphttp/loki]) is already wired to receive it — see .agents/handoffs/onda-4/04-para-10-dashboard-metrics-logs-reais.md. This panel will surface real log lines automatically once the app runs against a real otel-collector/Loki. It still shows no data here because this environment could not pull the otel-collector/Loki images (Docker Hub and quay.io both return 403 under this session's egress policy) to run docker-compose.opensource.yml and confirm log records actually land in Loki. No fabricated log line is shown per AGENTS.md §14.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{exporter=\"OTLP\"}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

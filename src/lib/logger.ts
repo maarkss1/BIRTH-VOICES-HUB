@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { logs, SeverityNumber, type Logger as OtelLogger } from '@opentelemetry/api-logs';
 import { getRequestId } from './requestContext.js';
 
 type LogMeta = Record<string, unknown> | unknown;
@@ -64,6 +65,82 @@ function normalizeMeta(meta: LogMeta): Record<string, unknown> | undefined {
   return { detail: meta };
 }
 
+// --- OTel Logs bridge -------------------------------------------------------------------------
+// See .agents/handoffs/onda-4/10-para-04-otel-metrics-logs-nao-exportados.md: pino only ever wrote
+// to stdout, with no path into the OTel pipeline the otel-collector already exposes (`logs`
+// pipeline -> Loki). `logs.getLogger(...)` is safe to call unconditionally: until
+// `lib/otelInitializer.ts` registers a real LoggerProvider (via `logRecordProcessors`), the global
+// Logs API hands back a no-op logger and `emit(...)` below is a harmless no-op — the same pattern
+// already relied on for traces/metrics elsewhere in this codebase.
+const otelLogger: OtelLogger = logs.getLogger('birth-voices-app-logger');
+
+const OTEL_SEVERITY: Record<'debug' | 'info' | 'warn' | 'error', { number: SeverityNumber; text: string }> = {
+  debug: { number: SeverityNumber.DEBUG, text: 'DEBUG' },
+  info: { number: SeverityNumber.INFO, text: 'INFO' },
+  warn: { number: SeverityNumber.WARN, text: 'WARN' },
+  error: { number: SeverityNumber.ERROR, text: 'ERROR' },
+};
+
+function isSecretKey(key: string): boolean {
+  return SECRET_FIELD_NAMES.some((name) => name.toLowerCase() === key.toLowerCase());
+}
+
+// Redacts the same field names/depth as the pino `redact` config above (top-level + one level
+// nested, matching the `name`/`*.name` path pairs in `redactPaths`). Applied independently of
+// pino's own redaction because this object is exported down a second, separate path (OTel Logs ->
+// otel-collector -> Loki) and must never rely on pino's internal serialization to have already
+// scrubbed it in place.
+function redactSecretsForExport(input: Record<string, unknown>, depth = 1): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (isSecretKey(key)) {
+      out[key] = '[REDACTED]';
+    } else if (depth > 0 && value !== null && typeof value === 'object' && !(value instanceof Error) && !Array.isArray(value)) {
+      out[key] = redactSecretsForExport(value as Record<string, unknown>, depth - 1);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+// OTel LogRecord attribute values must be strings/numbers/booleans (or homogeneous arrays of
+// those) — flatten anything else (Error objects, nested objects/arrays already past the
+// redaction pass) into a string so `emit(...)` never throws on a shape it doesn't accept.
+function toAttributeValue(value: unknown): string | number | boolean {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Error) {
+    return JSON.stringify({ name: value.name, message: value.message, stack: value.stack });
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function emitOtelLogRecord(level: 'debug' | 'info' | 'warn' | 'error', message: string, payload: Record<string, unknown>) {
+  try {
+    const severity = OTEL_SEVERITY[level];
+    const redacted = redactSecretsForExport(payload);
+    const attributes: Record<string, string | number | boolean> = {};
+    for (const [key, value] of Object.entries(redacted)) {
+      attributes[key] = toAttributeValue(value);
+    }
+    otelLogger.emit({
+      severityNumber: severity.number,
+      severityText: severity.text,
+      body: message,
+      attributes,
+    });
+  } catch (bridgeError) {
+    // Telemetry export must never break the actual application log call.
+    base.warn({ err: bridgeError }, 'Failed to emit log record to OTel Logs bridge');
+  }
+}
+// -----------------------------------------------------------------------------------------------
+
 function log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: LogMeta) {
   const requestId = getRequestId();
   const normalized = normalizeMeta(meta);
@@ -72,6 +149,7 @@ function log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?:
     ...(normalized || {}),
   };
   base[level](payload, message);
+  emitOtelLogRecord(level, message, payload);
 }
 
 export const logger = {

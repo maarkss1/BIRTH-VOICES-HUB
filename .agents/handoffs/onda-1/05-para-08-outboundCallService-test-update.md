@@ -1,7 +1,7 @@
 - De: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Para: Agente 08 (QA, Testes e Segurança)
 - Onda: 1
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -257,3 +257,30 @@ rejeita `inFlight: true` como `DuplicateCallError`; converte `PrismaClientKnownR
   outra regressão. Todos os outros arquivos de teste (`telephonyService.test.ts`,
   `telephony.controller.test.ts`, `sessionRepository.test.ts`, e o restante da suíte) continuam
   verdes sem alteração.
+
+## Resolução
+
+Onda 3, Agente 08. Ao iniciar a Onda 3 (branch criada a partir de `integracao/onda-3`, que já
+carrega as Ondas 1 e 2), `__tests__/outboundCallService.test.ts` já havia sido atualizado por commit
+anterior à minha execução (`ee9f3f6`, mesclado antes desta onda) para mockar
+`createOutboundPhoneSessionIfNoneInFlight` em vez do par antigo `findActiveOutboundSessionToNumber`
++ `createPhoneSession` — os 7 testes originais já passavam (`npm run test`: 288 passed, 1 skipped,
+0 failed nesta execução; não há mais as 5 falhas registradas na Onda 1/2). Faltava apenas o teste
+explícito do caminho de conflito de serialização do Postgres (`Prisma P2034`) pedido neste handoff.
+Adicionei:
+1. teste `treats a lost concurrent-transaction race (Prisma P2034) as a duplicate call, not a 500`
+   — confirma que `PrismaClientKnownRequestError` com `code: 'P2034'` vira `DuplicateCallError`,
+   não uma exceção genérica;
+2. teste `propagates an unrelated database error instead of masking it as a duplicate call` — confirma
+   que um erro de banco não relacionado ao P2034 não é silenciosamente convertido em duplicata;
+3. limpeza dos mocks mortos (`createPhoneSession`, `findActiveOutboundSessionToNumber`) que não são
+   mais chamados por `initiateOutboundCall` — mantê-los mockados sem uso mascarava o fato de que o
+   contrato real do serviço já mudou.
+
+`npx vitest run __tests__/outboundCallService.test.ts`: 9/9 testes verdes. Typecheck e lint limpos.
+
+Achado secundário, fora do meu escopo: `findActiveOutboundSessionToNumber`
+(`src/repositories/sessionRepository.ts`) não tem mais nenhum chamador em `src/` além da própria
+definição — parece código morto pós-migração para `createOutboundPhoneSessionIfNoneInFlight`.
+Registrado em `.agents/handoffs/onda-3/08-para-05-dead-code-sessionRepository.md` (prioridade
+normal, não bloqueador) para o Agente 05 avaliar remoção.

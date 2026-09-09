@@ -1,8 +1,12 @@
 import { useSessionStore } from '../../store/useSessionStore';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useId } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Home, Users, BookOpen, BarChart3, Mic, CreditCard, Code, Building2, Settings, Sun, Moon, Laptop, Command, X } from 'lucide-react';
 import { useTheme } from './ThemeContext';
+import { getAccessibleTextOnBrand, getAccessibleBrandForeground, colors } from './tokens';
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -25,7 +29,18 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   const [savedAgents, setSavedAgents] = useState<{ name: string }[]>([]);
+  const paletteId = useId();
+  const listboxId = `${paletteId}-listbox`;
+
+  // `--brand-color` is tenant-controlled (Organization branding), so `bg-brand text-white` on the
+  // selected-item chip and `text-brand` on light tint backgrounds can fail WCAG contrast for a
+  // light tenant color the same way it can for Button/Badge (see tokens.ts).
+  const brandColor = useSessionStore((state) => state.brandColor);
+  const accessibleBrandText = getAccessibleTextOnBrand(brandColor);
+  const brandTextOnLight = getAccessibleBrandForeground(brandColor, colors.light.surface);
+  const brandTextOnDark = getAccessibleBrandForeground(brandColor, colors.dark.surface);
 
   // Load saved agents for quick navigation
   useEffect(() => {
@@ -54,16 +69,21 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, [isOpen, onClose]);
 
-  // Focus input when opened
-
+  // Focus input when opened, and restore focus to whatever triggered the palette when it closes
+  // (otherwise closing it silently drops keyboard focus back to <body>).
   useEffect(() => {
     if (isOpen) {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
       requestAnimationFrame(() => {
         inputRef.current?.focus();
       });
       setSelectedIndex(0);
       setQuery('');
+      return undefined;
     }
+    previousFocusRef.current?.focus();
+    previousFocusRef.current = null;
+    return undefined;
   }, [isOpen]);
 
 
@@ -140,6 +160,20 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
       } else if (e.key === 'Escape') {
         e.preventDefault();
         onClose();
+      } else if (e.key === 'Tab' && containerRef.current) {
+        // Keep Tab inside the dialog (input <-> close button) instead of leaking focus to the
+        // page behind the backdrop.
+        const focusable = containerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -159,40 +193,50 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
 
   // Flat array of filtered items index tracker
   let flatIndex = 0;
+  const activeOptionId = filtered[selectedIndex] ? `${paletteId}-option-${filtered[selectedIndex].id}` : undefined;
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 backdrop-blur-xs pt-[10vh] px-4 animate-fade-in">
-      <div 
+      <div
         ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Paleta de comandos"
         className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 max-w-xl w-full overflow-hidden flex flex-col max-h-[500px]"
       >
         <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-          <Search className="h-5 w-5 text-slate-400 dark:text-slate-500 shrink-0" />
-          <input 
+          <Search aria-hidden="true" className="h-5 w-5 text-slate-400 dark:text-slate-500 shrink-0" />
+          <input
             ref={inputRef}
             type="text"
+            role="combobox"
+            aria-expanded={filtered.length > 0}
+            aria-controls={listboxId}
+            aria-activedescendant={activeOptionId}
+            aria-autocomplete="list"
+            aria-label="Buscar comando, página ou agente"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="w-full text-sm bg-transparent outline-none border-none text-slate-900 dark:text-slate-100 placeholder:text-slate-400 placeholder:dark:text-slate-500"
             placeholder="Digite um comando, página ou nome de agente..."
           />
           <div className="flex items-center gap-1">
-            <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded">ESC</kbd>
-            <button onClick={onClose} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-slate-600">
-              <X className="h-4 w-4" />
+            <kbd aria-hidden="true" className="px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded">ESC</kbd>
+            <button onClick={onClose} aria-label="Fechar paleta de comandos" className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-slate-600">
+              <X aria-hidden="true" className="h-4 w-4" />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-4">
+        <div id={listboxId} role="listbox" aria-label="Resultados" className="flex-1 overflow-y-auto p-2 space-y-4">
           {filtered.length === 0 ? (
             <div className="py-12 text-center text-slate-400 dark:text-slate-500 flex flex-col items-center gap-2">
-              <Command className="h-8 w-8 opacity-40 animate-pulse" />
+              <Command aria-hidden="true" className="h-8 w-8 opacity-40 animate-pulse" />
               <span className="text-sm font-semibold">Nenhum resultado encontrado</span>
             </div>
           ) : (
             Object.keys(categories).map(categoryName => (
-              <div key={categoryName} className="space-y-1">
+              <div key={categoryName} role="group" aria-label={categoryName} className="space-y-1">
                 <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider px-3 py-1">
                   {categoryName}
                 </h4>
@@ -201,19 +245,27 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
                   flatIndex++;
                   const isSelected = currentFlatIndex === selectedIndex;
                   return (
-                    <div 
+                    <div
                       key={item.id}
+                      id={`${paletteId}-option-${item.id}`}
+                      role="option"
+                      aria-selected={isSelected}
                       onClick={item.action}
                       onMouseEnter={() => setSelectedIndex(currentFlatIndex)}
                       className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all ${
-                        isSelected 
-                          ? 'bg-slate-100 dark:bg-slate-700/60 text-slate-900 dark:text-white' 
+                        isSelected
+                          ? 'bg-slate-100 dark:bg-slate-700/60 text-slate-900 dark:text-white'
                           : 'text-slate-700 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-700/30'
                       }`}
                     >
                       <div className="flex items-center gap-3">
-                        <div className={`p-1.5 rounded-md ${isSelected ? 'bg-brand text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}>
-                          {item.icon}
+                        <div
+                          className="p-1.5 rounded-md"
+                          style={isSelected ? { backgroundColor: 'var(--brand-color, #ff5618)', color: accessibleBrandText } : undefined}
+                        >
+                          <span className={isSelected ? '' : 'text-slate-500 dark:text-slate-400'} aria-hidden="true">
+                            {item.icon}
+                          </span>
                         </div>
                         <div>
                           <p className="text-sm font-semibold">{item.title}</p>
@@ -221,7 +273,10 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
                         </div>
                       </div>
                       {isSelected && (
-                        <span className="text-[10px] font-mono font-bold text-brand bg-brand-50 dark:bg-brand-900/30 px-1.5 py-0.5 rounded">
+                        <span
+                          className="text-[10px] font-mono font-bold bg-brand-50 dark:bg-brand-900/30 px-1.5 py-0.5 rounded text-[var(--enter-fg-light)] dark:text-[var(--enter-fg-dark)]"
+                          style={{ '--enter-fg-light': brandTextOnLight, '--enter-fg-dark': brandTextOnDark } as React.CSSProperties}
+                        >
                           ENTER
                         </span>
                       )}

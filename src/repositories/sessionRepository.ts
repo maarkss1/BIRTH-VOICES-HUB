@@ -111,28 +111,6 @@ export async function createInboundPhoneSessionIfNoneForCallSid(
   }
 }
 
-// Guard against an automated dialer double-calling the same lead: a retry loop that fires before
-// the first call reaches a terminal status would otherwise ring the same person twice at once.
-//
-// Read-only helper, kept for callers that only need the "is a call already in flight?" check
-// without also creating a session (e.g. a future status-inspection endpoint). The actual dial path
-// must NOT build on this function directly — see createOutboundPhoneSessionIfNoneInFlight below
-// for why a plain "check, then create" here is not safe against concurrent requests.
-export function findActiveOutboundSessionToNumber(tenantId: string, toNumber: string) {
-  return prisma.session.findFirst({
-    where: {
-      tenantId,
-      channel: 'phone',
-      status: 'active',
-      deletedAt: null,
-      AND: [
-        { metadata: { path: ['direction'], equals: 'outbound' } },
-        { metadata: { path: ['to'], equals: toNumber } },
-      ],
-    },
-  });
-}
-
 /**
  * Atomically checks for an outbound call already in flight to this number and creates the new
  * phone session in the same database transaction.

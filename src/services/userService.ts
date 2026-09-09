@@ -38,7 +38,7 @@ export async function createUserInTenant(tenantId: string, data: { email: string
     tenantId,
   });
 
-  const role = await getOrCreateSystemRole(data.role === 'admin' ? 'admin' : 'user');
+  const role = await getOrCreateSystemRole(data.role ?? 'user');
   await userRepository.createMembership(user.id, tenantId, role.id);
 
   return { id: user.id, email: user.email, role: role.name };

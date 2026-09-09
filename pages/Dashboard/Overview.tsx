@@ -36,7 +36,32 @@ interface ReadyChecks {
   redis: 'ok' | 'error';
 }
 
+// One row of GET /api/metrics — see prisma/schema.prisma `Metric`. For SLA we only care about
+// `name === 'platform_ready_check'` rows (Agente 10, src/services/slaScheduler.ts): a real
+// Postgres+Redis health check sampled every ~5 minutes and persisted per tenant, never fabricated.
+interface MetricEntry {
+  id: string;
+  name: string;
+  value: number;
+  tags?: Record<string, unknown>;
+  timestamp: string;
+}
+
 type FetchStatus = 'loading' | 'ready' | 'error';
+
+const SLA_READY_CHECK_METRIC = 'platform_ready_check';
+const SLA_WINDOW_MS = 24 * 60 * 60 * 1000; // last 24h — see handoff onda-4/10-para-02-sla-telemetria-overview.md
+
+// Names which real component(s) failed on a given platform_ready_check sample, from its `tags`
+// (`{ database: 'ok'|'error', redis: 'ok'|'error' }`). Returns null when the sample was healthy.
+function describeSlaFailure(sample: MetricEntry | undefined): string | null {
+  if (!sample || sample.value !== 0) return null;
+  const tags = sample.tags ?? {};
+  const failed: string[] = [];
+  if (tags.database && tags.database !== 'ok') failed.push('banco de dados');
+  if (tags.redis && tags.redis !== 'ok') failed.push('Redis');
+  return failed.length > 0 ? failed.join(' e ') : 'componente não identificado';
+}
 
 // Parses a "mm:ss" call-duration string into whole seconds. Real call durations are free-text
 // (see prisma CallLog.duration / callLogRepository.createCallLog) so not every value is
@@ -80,6 +105,12 @@ export default function RebuiltExecutiveOverview() {
     status: 'loading',
     checks: null,
   });
+  // Real SLA samples (GET /api/metrics, name: platform_ready_check) — see
+  // .agents/handoffs/onda-4/10-para-02-sla-telemetria-overview.md. Never a fabricated percentage.
+  const [slaState, setSlaState] = useState<{ status: FetchStatus; samples: MetricEntry[] }>({
+    status: 'loading',
+    samples: [],
+  });
 
   const fetchCalls = useCallback(async () => {
     setCallsState((prev) => ({ ...prev, status: 'loading' }));
@@ -119,6 +150,26 @@ export default function RebuiltExecutiveOverview() {
     }
   }, []);
 
+  // GET /api/metrics is tenant-scoped and mixes several event names (ai_call_*, platform_ready_check,
+  // …) — filter down to the SLA sampler's events client-side, same convention as Agente 04's
+  // handoff for the cost/tokens/latency cards.
+  const fetchSla = useCallback(async () => {
+    setSlaState((prev) => ({ ...prev, status: 'loading' }));
+    try {
+      const res = await fetch('/api/metrics');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const allMetrics: MetricEntry[] = Array.isArray(data.metrics) ? data.metrics : [];
+      const samples = allMetrics
+        .filter((m) => m.name === SLA_READY_CHECK_METRIC)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setSlaState({ status: 'ready', samples });
+    } catch (err) {
+      logger.error('Error loading SLA samples', { err });
+      setSlaState((prev) => ({ ...prev, status: 'error' }));
+    }
+  }, []);
+
   useEffect(() => {
     const fetchChecklist = async () => {
       try {
@@ -137,7 +188,8 @@ export default function RebuiltExecutiveOverview() {
     fetchCalls();
     fetchAgents();
     fetchReady();
-  }, [fetchCalls, fetchAgents, fetchReady]);
+    fetchSla();
+  }, [fetchCalls, fetchAgents, fetchReady, fetchSla]);
 
   const updateChecklist = async (key: string, value: boolean) => {
     if (!checklist) return;
@@ -212,6 +264,20 @@ export default function RebuiltExecutiveOverview() {
   const avgDuration = parsedDurations.length > 0
     ? formatSecondsAsDuration(parsedDurations.reduce((a, b) => a + b, 0) / parsedDurations.length)
     : null;
+
+  // SLA (disponibilidade) — real uptime approximation from platform_ready_check samples in the
+  // last 24h, never a fabricated percentage. Empty (not zero) until the scheduler has produced at
+  // least one sample for this tenant — see .agents/handoffs/onda-4/10-para-02-sla-telemetria-overview.md.
+  const slaWindowSamples = slaState.samples.filter(
+    (m) => Date.now() - new Date(m.timestamp).getTime() <= SLA_WINDOW_MS
+  );
+  const slaUptimePercent = slaWindowSamples.length > 0
+    ? (slaWindowSamples.filter((m) => m.value === 1).length / slaWindowSamples.length) * 100
+    : null;
+  const slaLastFailure = describeSlaFailure(slaState.samples[0]);
+  const slaCaption = slaUptimePercent !== null
+    ? `${slaWindowSamples.length} amostra${slaWindowSamples.length === 1 ? '' : 's'} (24h) · a cada 5 min${slaLastFailure ? ` · última falha: ${slaLastFailure}` : ''}`
+    : 'Ainda sem amostras suficientes';
 
   return (
     <div className="space-y-8 animate-slide-up text-left">
@@ -529,9 +595,12 @@ export default function RebuiltExecutiveOverview() {
       {activeTab === 'kpis' && (
         <div className="space-y-8 animate-fade-in">
           {/* REAL, COUNTABLE KPIS — derived from GET /api/agents and GET /api/call-logs.
-              No token/cost/CSAT/SLA/latency card here: this platform has no telemetry pipeline
-              feeding those yet (see handoff 02-para-04-10-telemetria-overview.md). */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              Disponibilidade (SLA) is real too (GET /api/metrics, platform_ready_check — Agente 10,
+              see handoff onda-4/10-para-02-sla-telemetria-overview.md): a periodic sample, not a
+              continuous measurement, documented as such via its tooltip/caption below.
+              No token/cost/CSAT/latency card here yet — this platform has no telemetry pipeline
+              feeding those to this screen yet (see handoff 02-para-04-10-telemetria-overview.md). */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             <RealStatCard
               title="Agentes Cadastrados"
               status={agentsState.status}
@@ -568,14 +637,21 @@ export default function RebuiltExecutiveOverview() {
               caption={completionRate !== null ? `${completedCalls} de ${totalCalls} concluídas` : 'Sem chamadas registradas'}
               tooltip="Percentual de chamadas com status Concluído"
             />
+            <RealStatCard
+              title="Disponibilidade (SLA)"
+              status={slaState.status}
+              value={slaUptimePercent !== null ? `${slaUptimePercent.toFixed(2)}%` : '—'}
+              caption={slaCaption}
+              tooltip="Uptime aproximado da plataforma (Postgres + Redis), calculado a partir de checagens reais amostradas a cada 5 minutos — não é uma medição contínua: uma indisponibilidade mais curta que o intervalo entre amostras pode não aparecer aqui."
+            />
           </div>
 
           {/* Honest placeholder for metrics this platform doesn't produce yet, instead of
-              inventing tokens/cost/CSAT/SLA/latency numbers. */}
+              inventing tokens/cost/CSAT/latency numbers. SLA moved to its own real card above. */}
           <Alert
             variant="info"
-            title="Telemetria de IA e voz ainda não instrumentada"
-            description="Tokens consumidos, custo estimado, latência de resposta, disponibilidade (SLA) e CSAT dependem do pipeline de Observability/Voice Runtime, que ainda não publica esses eventos para o dashboard. Assim que existir, estas métricas aparecem aqui com dado real — nunca um número de exemplo."
+            title="Telemetria de IA ainda não instrumentada"
+            description="Tokens consumidos, custo estimado, latência de resposta e CSAT dependem do pipeline de Observability/Voice Runtime, que ainda não publica esses eventos para o dashboard. Assim que existir, estas métricas aparecem aqui com dado real — nunca um número de exemplo."
           />
 
           {/* LOWER WIDGETS GRID */}
