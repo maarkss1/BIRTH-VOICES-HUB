@@ -1,5 +1,5 @@
 # --- Stage 1: Build & Compile ---
-FROM node:22-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /app
 
 # openssl is required so Prisma's platform detection can correctly identify OpenSSL 3.x
@@ -25,7 +25,7 @@ RUN npx prisma generate
 RUN npm run build
 
 # --- Stage 2: Production Dependencies ---
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
@@ -36,7 +36,7 @@ RUN npm ci --omit=dev --workspaces=false
 RUN npx prisma generate
 
 # --- Stage 3: Runner ---
-FROM node:22-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /app
 RUN apk add --no-cache openssl
 
