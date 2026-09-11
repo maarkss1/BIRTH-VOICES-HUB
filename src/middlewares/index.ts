@@ -38,8 +38,7 @@ export const csrfProtection = (req: express.Request, res: express.Response, next
     if (host) {
       try {
         const parsedOrigin = new URL(origin).host;
-        const isLocalBypass = !isProduction && (host.includes('localhost') || host.includes('127.0.0.1'));
-        if (parsedOrigin !== host && !isLocalBypass) {
+        if (parsedOrigin !== host) {
           res.status(403).json({ error: 'Validação de origem de segurança (CSRF) falhou.' });
           return;
         }
