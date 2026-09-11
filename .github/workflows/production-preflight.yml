@@ -1,0 +1,195 @@
+name: Production Preflight (No Deploy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: 'Commit SHA already merged to main and validated by CI'
+        required: true
+        type: string
+      probe_public_url:
+        description: 'Probe PUBLIC_BASE_URL/api/health (use after a service URL already exists)'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Validate production without deploying
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+
+    env:
+      TARGET_SHA: ${{ inputs.target_sha }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+      PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+      PRODUCTION_REDIS_URL: ${{ secrets.PRODUCTION_REDIS_URL }}
+      DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+      REDIS_URL: ${{ secrets.PRODUCTION_REDIS_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      REFRESH_TOKEN_SECRET: ${{ secrets.REFRESH_TOKEN_SECRET }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
+      WEBHOOK_SIGNING_SECRET: ${{ secrets.WEBHOOK_SIGNING_SECRET }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+      BLAND_API_KEY: ${{ secrets.BLAND_API_KEY }}
+      BLAND_WEBHOOK_TOKEN: ${{ secrets.BLAND_WEBHOOK_TOKEN }}
+      BLAND_RECORD_CALLS: ${{ vars.BLAND_RECORD_CALLS }}
+      BLAND_RECORDING_APPROVED: ${{ vars.BLAND_RECORDING_APPROVED }}
+      ATLASGR_TENANT_ID: ${{ vars.ATLASGR_TENANT_ID }}
+      ATLASGR_BASE_URL: ${{ vars.ATLASGR_BASE_URL }}
+      ATLASGR_WEBHOOK_SECRET: ${{ secrets.ATLASGR_WEBHOOK_SECRET }}
+
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+
+      - name: Verify target is present on main
+        shell: bash
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${TARGET_SHA}" origin/main; then
+            echo "::error::TARGET_SHA must already be present on main."
+            exit 1
+          fi
+
+      - name: Verify exact target SHA passed CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          response="$(curl --fail --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&status=completed&per_page=100")"
+          successful_runs="$(printf '%s' "$response" | jq --arg sha "$TARGET_SHA" '[.workflow_runs[] | select(.name == "CI/CD Pipeline" and .head_sha == $sha and .conclusion == "success")] | length')"
+          if [ "$successful_runs" -lt 1 ]; then
+            echo "::error::No successful CI/CD Pipeline run found for TARGET_SHA=${TARGET_SHA}."
+            exit 1
+          fi
+
+      - name: Validate production configuration contract
+        run: node scripts/validate-production-config.mjs
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Verify production database connectivity
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { PrismaClient } from '@prisma/client';
+          const prisma = new PrismaClient();
+          try {
+            await prisma.$queryRaw`SELECT 1`;
+            console.log('PostgreSQL connectivity: OK');
+          } finally {
+            await prisma.$disconnect();
+          }
+          NODE
+
+      - name: Verify production Redis connectivity
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import Redis from 'ioredis';
+          const redis = new Redis(process.env.PRODUCTION_REDIS_URL, {
+            lazyConnect: true,
+            connectTimeout: 7000,
+            maxRetriesPerRequest: 1,
+          });
+          try {
+            await redis.connect();
+            const pong = await redis.ping();
+            if (pong !== 'PONG') throw new Error(`Unexpected Redis response: ${pong}`);
+            console.log('Redis connectivity: OK');
+          } finally {
+            redis.disconnect();
+          }
+          NODE
+
+      - name: Verify Twilio credentials (read-only)
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import twilio from 'twilio';
+          const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+          const account = await client.api.accounts(process.env.TWILIO_ACCOUNT_SID).fetch();
+          if (account.sid !== process.env.TWILIO_ACCOUNT_SID) throw new Error('Twilio account verification mismatch');
+          console.log('Twilio credentials: OK');
+          NODE
+
+      - name: Verify Gemini API key (read-only)
+        shell: bash
+        run: |
+          response="$(curl --fail --silent --show-error \
+            "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}")"
+          count="$(printf '%s' "$response" | jq '.models | length')"
+          if [ "$count" -lt 1 ]; then
+            echo "::error::Gemini credential returned no available models."
+            exit 1
+          fi
+          echo "Gemini credentials: OK"
+
+      - id: gcp-auth
+        name: Authenticate to Google Cloud (read-only preflight)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY || secrets.GCP_CREDENTIALS }}
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Verify Google Cloud project access
+        shell: bash
+        run: |
+          actual="$(gcloud projects describe "${GCP_PROJECT_ID}" --format='value(projectId)')"
+          if [ "$actual" != "${GCP_PROJECT_ID}" ]; then
+            echo "::error::Authenticated GCP project does not match GCP_PROJECT_ID."
+            exit 1
+          fi
+          echo "Google Cloud access: OK"
+
+      - name: Probe public health endpoint
+        if: ${{ inputs.probe_public_url }}
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --max-time 15 "${PUBLIC_BASE_URL%/}/api/health" >/tmp/health.json
+          jq -e '.status == "ok" or .status == "healthy"' /tmp/health.json >/dev/null
+          echo "Public health endpoint: OK"
+
+      - name: Preflight summary
+        run: |
+          echo "Production preflight PASSED for ${TARGET_SHA}."
+          echo "No image was pushed, no migration was applied, and no deploy was performed."

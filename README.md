@@ -4,13 +4,15 @@ Plataforma multi-tenant de agentes de voz e texto com React, Node.js/Express, Po
 
 ## Estado do produto
 
-A linha de produção é protegida por CI e por gates server-side. Um commit elegível a release precisa passar por:
+A linha de release é validada por CI e por gates server-side. Um commit elegível a release precisa passar por:
 
 ```text
 Prisma migrate → seed → lint → typecheck → Vitest → build → Playwright/Chromium → Docker build
 ```
 
-O deploy do Cloud Run só é disparado após CI bem-sucedido e usa **o mesmo SHA testado**, com `prisma migrate deploy` antes da promoção da imagem.
+**Merge em `main` não dispara produção.** O deploy do Cloud Run é manual, exige o SHA exato já validado, confirmação textual `DEPLOY`, motivo de release e revalidação da configuração antes de aplicar migrations e promover a imagem.
+
+Antes do primeiro go-live, rode também o workflow **Production Preflight (No Deploy)**. Ele verifica infraestrutura e credenciais de forma read-only sem publicar imagem, aplicar migrations ou fazer deploy.
 
 ### Studio e runtime de voz
 
@@ -30,6 +32,8 @@ O servidor bloqueia a publicação de grafos que usam semântica ainda não exec
 ### Privacidade e consentimento
 
 Chamadas a provedores externos de IA são tenant-scoped e exigem consentimento registrado para o tenant quando carregam dados de clientes/contatos. A integração AtlasGR/Bland também aplica essa regra. Gravação de chamadas Bland é **opt-in** e fica desligada por padrão.
+
+Em produção, `BLAND_RECORD_CALLS=true` também exige `BLAND_RECORDING_APPROVED=true`, que representa aprovação explícita de privacidade/jurídico para gravação e retenção.
 
 ## Primeiro uso local
 
@@ -68,7 +72,7 @@ npm run build
 npm run test:e2e
 ```
 
-Os testes E2E sobem o build de produção e cobrem, além de health/landing, o ciclo de autenticação `register → /auth/me → logout → login`.
+Os testes E2E sobem o build compilado e cobrem, além de health/landing, o ciclo de autenticação `register → /auth/me → logout → login`.
 
 ## Configuração de produção
 
@@ -76,7 +80,7 @@ Não copie valores de exemplos para produção e nunca versione `.env` real.
 
 ### Núcleo obrigatório
 
-O preflight de `.github/workflows/deploy.yml` exige:
+Os gates de `.github/workflows/production-preflight.yml` e `.github/workflows/deploy.yml` exigem:
 
 **GitHub Secrets**
 
@@ -114,9 +118,31 @@ A integração é opcional para o núcleo Twilio, mas é tratada como **bloco at
 Opcionalmente:
 
 - `BLAND_RECORD_CALLS=false` por padrão
+- `BLAND_RECORDING_APPROVED=false` por padrão
 - `ATLASGR_WEBHOOK_IDEMPOTENCY_TTL_SECONDS=86400`
 
 O tenant apontado por `ATLASGR_TENANT_ID` precisa ter consentimento de IA registrado antes de dados de lead serem enviados ao provedor externo.
+
+## Pré-go-live e homologação
+
+O fluxo oficial é:
+
+```text
+CI verde → Production Preflight (No Deploy) → UAT de voz → Deploy manual → smoke público
+```
+
+O runbook completo está em [`docs/GO_LIVE_RUNBOOK.md`](./docs/GO_LIVE_RUNBOOK.md) e a matriz de chamadas reais em [`docs/UAT_VOICE_MATRIX.md`](./docs/UAT_VOICE_MATRIX.md).
+
+Após o deploy, o smoke público pode ser executado com um usuário UAT dedicado:
+
+```bash
+PUBLIC_BASE_URL=https://seu-dominio.example \
+UAT_EMAIL=usuario-uat@example.com \
+UAT_PASSWORD='senha-uat' \
+node scripts/uat-public-smoke.mjs
+```
+
+O smoke valida health, login, sessão, tenant, leitura do workflow e logout sem criar ou modificar dados de workflow.
 
 ## Segurança de secrets
 
@@ -134,6 +160,8 @@ Consulte [`docs/secrets-guide.md`](./docs/secrets-guide.md) para o checklist ope
 - [Testes](./TESTING.md)
 - [Troubleshooting](./TROUBLESHOOTING.md)
 - [Runbook de produção](./docs/RUNBOOK.md)
+- [Go-Live controlado](./docs/GO_LIVE_RUNBOOK.md)
+- [UAT de voz](./docs/UAT_VOICE_MATRIX.md)
 - [Secrets e variáveis](./docs/secrets-guide.md)
 - [Roadmap](./ROADMAP.md)
 - [Contribuição](./CONTRIBUTING.md)

@@ -69,13 +69,10 @@ jobs:
     - name: Install Dependencies
       run: npm ci
 
-    # Scoped to the root workspace's production dependency tree (--workspaces=false), matching
-    # exactly what ships in the Docker image (see Dockerfile: only the root package is installed
-    # with --omit=dev; packages/sip-agent is a non-deployed PoC workspace, never copied into the
-    # image — see docs/AUDIT.md §2/§3.4). Auditing the full workspace tree here would fail CI on
-    # sip-agent's adm-zip/onnxruntime-node advisories even though nothing ships them.
-    - name: Audit production dependencies (high severity)
-      run: npm audit --omit=dev --audit-level=high --workspaces=false
+    - name: Runtime Dependency Audit
+      # Audit the same root runtime dependency set copied into the Cloud Run image. Experimental
+      # workspaces such as packages/sip-agent are not shipped by the production Docker stage.
+      run: npm audit --omit=dev --workspaces=false --audit-level=high
 
     - name: Prisma Generate
       run: npx prisma generate
