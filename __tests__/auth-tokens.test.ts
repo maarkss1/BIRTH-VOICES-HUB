@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import crypto from 'crypto';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import {
   hashPassword,
   verifyPassword,
@@ -75,6 +76,38 @@ describe('Access tokens', () => {
 
   it('rejects an empty token', () => {
     expect(verifyToken('')).toBeNull();
+  });
+
+
+  it('rejects an expired token', () => {
+
+    vi.useFakeTimers();
+    try {
+      const token = generateToken(payload); // payload will be signed with now + 900
+
+      // Advance time by 901 seconds
+      vi.advanceTimersByTime(901 * 1000);
+
+      expect(verifyToken(token)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+
+  it('rejects a token with invalid JSON payload', () => {
+    // A token with a valid signature but invalid JSON in the body.
+    // Let's create one dynamically using crypto.
+
+    const secret = process.env.JWT_SECRET || 'test_jwt_secret';
+
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    // 'invalid-json' encoded in base64url is 'aW52YWxpZC1qc29u'
+    const body = Buffer.from('invalid-json').toString('base64url');
+    const signature = crypto.createHmac('sha256', secret).update(header + '.' + body).digest('base64url');
+
+    const token = header + '.' + body + '.' + signature;
+    expect(verifyToken(token)).toBeNull();
   });
 
   it('does not accept a refresh token as an access token', () => {
