@@ -18,8 +18,8 @@ env:
   NODE_VERSION: '22.x'
   # Fixed values for the ephemeral CI database/cache — these are not read from
   # repository secrets; CI never talks to production infrastructure.
-  DATABASE_URL: "postgresql://devuser:devpassword@127.0.0.1:5432/birthvoices"
-  REDIS_URL: "redis://127.0.0.1:6379"
+  DATABASE_URL: "postgresql://devuser:devpassword@localhost:5432/birthvoices"
+  REDIS_URL: "redis://localhost:6379"
   ALLOWED_ORIGINS: "http://127.0.0.1:3000,http://localhost:3000"
   JWT_SECRET: "ci_jwt_secret_do_not_use_in_production"
   REFRESH_TOKEN_SECRET: "ci_refresh_secret_do_not_use_in_production"
