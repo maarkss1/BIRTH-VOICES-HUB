@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 07 (Studio, Workflows e Colaboração)
 - Onda: 6
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -66,3 +66,7 @@ nenhum nome de voz Twilio reconhecido (a lista atual está em `KNOWN_TWILIO_VOIC
 `voiceOverride` e a chamada usa a voz padrão do Twilio silenciosamente. Não implementei isso por
 ser mudança de UI (fora do meu domínio de arquivo) — apenas registro aqui caso vocês queiram
 priorizar.
+
+## Resolução (2026-09-21)
+Resolvido na Onda 6 pelo Coordenador/Agente 07: `src/services/workflowVersioning.test.ts` foi atualizado utilizando a função `runtimeIncompatibleGraph` com o tipo sintético `este_tipo_nao_existe`, garantindo teste robusto do gate de runtime sem dependência de tipos reais de nós. Testes 100% aprovados.
+

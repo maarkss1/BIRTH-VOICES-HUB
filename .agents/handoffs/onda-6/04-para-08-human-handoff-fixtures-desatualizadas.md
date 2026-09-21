@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 08 (QA, Testes e Segurança)
 - Onda: 6 (rodada 2)
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -99,3 +99,7 @@ meu resumo para o Coordenador
 (`.agents/handoffs/onda-6/04-para-00-resumo-rodada-2.md`) que `npx vitest run` não fica 100% verde
 no meu lado até este handoff (e o `04-para-07-*` irmão, para
 `src/services/workflowVersioning.test.ts`) serem resolvidos pelos donos dos respectivos arquivos.
+
+## Resolução (2026-09-21)
+Resolvido na Onda 6 pelo Coordenador/Agente 08: `__tests__/workflowRuntimeService.test.ts` e `__tests__/workflowPublishGate.test.ts` foram atualizados para usar o nó sintético `este_tipo_nao_existe`, permitindo que `human_handoff` seja executado normalmente pelo runtime sem quebrar os gates negativos de compatibilidade. Suíte completa aprovada.
+

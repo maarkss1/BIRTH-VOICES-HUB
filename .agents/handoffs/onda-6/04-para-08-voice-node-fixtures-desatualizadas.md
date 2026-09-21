@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 08 (QA, Testes e Segurança)
 - Onda: 6
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -77,3 +77,7 @@ Não fabriquei nem escondi essa quebra — documentei em
 `.agents/handoffs/onda-6/04-para-00-resumo-e-desvios.md` que `npx vitest run` não fica 100% verde
 no meu lado até este handoff (e o `04-para-07-*` irmão, para
 `src/services/workflowVersioning.test.ts`) serem resolvidos pelos donos dos respectivos arquivos.
+
+## Resolução (2026-09-21)
+Resolvido na Onda 6 pelo Coordenador/Agente 08: as fixtures de `__tests__/workflowRuntimeService.test.ts` e `__tests__/workflowPublishGate.test.ts` foram migradas para o nó sintético `este_tipo_nao_existe`, tornando o gate de capacidade imune a desatualizações futuras. Testes 100% aprovados.
+

@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 07 (Studio, Workflows e Colaboração)
 - Onda: 6 (rodada 2)
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -74,3 +74,7 @@ falhas em arquivos fora da minha propriedade (as outras 2, em `__tests__/**`, es
 irmão `.agents/handoffs/onda-6/04-para-08-human-handoff-fixtures-desatualizadas.md` para o Agente
 08). Já resolvi o equivalente no meu próprio arquivo de teste
 (`src/services/workflowRuntimeService.knowledgeTool.test.ts`), se ajudar de referência.
+
+## Resolução (2026-09-21)
+Resolvido na Onda 6 pelo Coordenador/Agente 07: `src/services/workflowVersioning.test.ts` foi atualizado para utilizar o nó sintético `este_tipo_nao_existe` em `runtimeIncompatibleGraph`, desvinculando o teste negativo de qualquer tipo real de nó do Studio. Testes 100% aprovados.
+
