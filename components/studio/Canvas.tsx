@@ -68,7 +68,8 @@ function CanvasInner() {
     saveWorkflowToServer,
     publishWorkflowToServer,
     publishState,
-    publishIssues
+    publishIssues,
+    openVersionHistory
   } = useStudioStore();
 
   useEffect(() => {
@@ -151,6 +152,7 @@ function CanvasInner() {
         onFitView={() => fitView({ duration: 500, padding: 0.2 })}
         onSimulate={() => setIsSimulatorOpen(true)}
         onPublish={() => publishWorkflowToServer()}
+        onOpenVersionHistory={openVersionHistory}
         publishState={publishState}
         publishIssues={publishIssues}
       />

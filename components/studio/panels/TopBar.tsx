@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Settings, Share, Download, MessageSquare, LayoutGrid, Search, Maximize, Minus, Plus, Loader2, CheckCircle2 } from 'lucide-react';
+import { Play, Settings, Share, Download, MessageSquare, LayoutGrid, Search, Maximize, Minus, Plus, Loader2, CheckCircle2, History } from 'lucide-react';
 import { FlowHealthScore, ValidationIssue } from '../../../lib/studio/types';
 import { ShieldAlert } from 'lucide-react';
 
@@ -11,11 +11,12 @@ interface TopBarProps {
   onFitView?: () => void;
   onSimulate?: () => void;
   onPublish?: () => void;
+  onOpenVersionHistory?: () => void;
   publishState?: 'idle' | 'publishing' | 'success' | 'error';
   publishIssues?: ValidationIssue[];
 }
 
-export function TopBar({ health, issues, onZoomIn, onZoomOut, onFitView, onSimulate, onPublish, publishState = 'idle', publishIssues = [] }: TopBarProps) {
+export function TopBar({ health, issues, onZoomIn, onZoomOut, onFitView, onSimulate, onPublish, onOpenVersionHistory, publishState = 'idle', publishIssues = [] }: TopBarProps) {
   const hasErrors = issues.some(i => i.type === 'error');
   return (
     <div className="relative h-14 bg-[#0B0D14]/80 backdrop-blur-xl border-b border-white/5 flex items-center justify-between px-4 z-10 shrink-0">
@@ -89,6 +90,13 @@ export function TopBar({ health, issues, onZoomIn, onZoomOut, onFitView, onSimul
           </button>
           <button className="px-3 py-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 text-xs font-semibold flex items-center gap-2 border border-transparent hover:border-white/10 transition-all">
             <Download className="w-3.5 h-3.5" /> Export
+          </button>
+          <button
+            onClick={onOpenVersionHistory}
+            title="Histórico de Publicações"
+            className="px-3 py-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 text-xs font-semibold flex items-center gap-2 border border-transparent hover:border-white/10 transition-all"
+          >
+            <History className="w-3.5 h-3.5" /> Histórico
           </button>
           <button
             onClick={onPublish}

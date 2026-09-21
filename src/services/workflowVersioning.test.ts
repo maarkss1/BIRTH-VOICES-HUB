@@ -85,19 +85,23 @@ function validGraph() {
   return { nodes, edges };
 }
 
-// Structurally valid but depends on a node the phone runtime does not execute today (`voice`) —
-// this is exactly the shape of graph a runtime-capability regression (or an old archived version
-// that used to be supported) looks like.
+// Structurally valid but depends on a node type the phone runtime does not execute — this is
+// exactly the shape of graph a runtime-capability regression (or an old archived version that
+// used to be supported) looks like. History: `voice` through Onda 5, then `human_handoff` through
+// Onda 6 rodada 1 — each got unblocked by a real feature within the same onda that made this
+// fixture stale (see .agents/handoffs/onda-6/04-para-07-*.md, both rodadas). Every real Studio
+// NodeType is executable today, so a synthetic/nonexistent type is the only example that cannot
+// be invalidated by a future feature unblocking a real node.
 function runtimeIncompatibleGraph() {
   const nodes = [
     node('start-1', 'start'),
-    node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'voice-1' }),
+    node('bogus-1', 'este_tipo_nao_existe' as unknown as NodeType, {}),
     node('prompt-1', 'prompt', { promptText: 'Atenda com objetividade.' }),
     node('end-1', 'end'),
   ];
   const edges = [
-    edge('e1', 'start-1', 'voice-1'),
-    edge('e2', 'voice-1', 'prompt-1'),
+    edge('e1', 'start-1', 'bogus-1'),
+    edge('e2', 'bogus-1', 'prompt-1'),
     edge('e3', 'prompt-1', 'end-1'),
   ];
   return { nodes, edges };
@@ -329,7 +333,7 @@ describe('rollbackToVersion', () => {
 
     expect(error).toBeInstanceOf(ValidationFailedError);
     expect((error as ValidationFailedError).issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-voice-1', type: 'error' }),
+      expect.objectContaining({ id: 'err-runtime-unsupported-bogus-1', type: 'error' }),
     ]));
     expect(mockCreateVersion).not.toHaveBeenCalled();
     expect(mockUpsert).not.toHaveBeenCalled();

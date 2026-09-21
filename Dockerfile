@@ -51,12 +51,17 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./
 COPY prisma/ ./prisma/
 
+# server.ts loads docs/api/openapi.yaml at startup to mount Swagger UI at /api-docs.
+COPY docs/ ./docs/
+
+# Set ownership
 RUN chown -R expressjs:nodejs /app
 USER expressjs
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+# Basic healthcheck on app port. 127.0.0.1 avoids IPv6 resolution issues in Alpine musl.
+HEALTHCHECK --interval=5s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/health || exit 1
 
 CMD ["npm", "start"]

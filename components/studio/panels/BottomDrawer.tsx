@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import {
-  Play, Pause, Square, AlertCircle, AlertTriangle, List,
-  Terminal, BarChart2, Sparkles, Variable, Plus, Trash2, FastForward, CheckCircle2
+  Play, Pause, Square, AlertCircle, List,
+  Terminal, BarChart2, Sparkles, Variable, Plus, Trash2, FastForward
 } from 'lucide-react';
 import { useStudioStore } from '../../../store/useStudioStore';
 import { validationEngine } from '../../../lib/studio/ValidationEngine';
 import { motion, AnimatePresence } from 'motion/react';
+import { ValidationIssuesList } from './ValidationIssuesList';
 
 export function BottomDrawer() {
   const [activeTab, setActiveTab] = useState<'runtime' | 'errors' | 'events' | 'analytics' | 'catarina'>('runtime');
@@ -312,43 +313,7 @@ export function BottomDrawer() {
                 <span className="text-xs text-gray-500">Live background compile updates continuously</span>
               </div>
 
-              {issues.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-10 text-center space-y-2">
-                  <CheckCircle2 className="w-10 h-10 text-green-400 drop-shadow-[0_0_10px_rgba(34,197,94,0.5)]" />
-                  <p className="text-sm font-semibold text-gray-200">Seu fluxo está 100% válido!</p>
-                  <p className="text-xs text-gray-400">Sem erros estruturais, de provider ou cíclicos detectados.</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {issues.map((iss) => (
-                    <div 
-                      key={iss.id} 
-                      className={`p-3 rounded-lg border flex items-start gap-3 transition-all ${
-                        iss.type === 'error' 
-                          ? 'bg-red-500/10 border-red-500/20 text-red-300 shadow-[0_0_10px_rgba(239,68,68,0.1)]' 
-                          : 'bg-amber-500/10 border-amber-500/20 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.1)]'
-                      }`}
-                    >
-                      {iss.type === 'error' ? (
-                        <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
-                      ) : (
-                        <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-                      )}
-                      <div>
-                        <div className="text-xs font-bold flex items-center gap-1.5">
-                          {iss.type === 'error' ? 'Erro Crítico' : 'Alerta de Otimização'}
-                          {iss.nodeId && (
-                            <span className="font-mono text-[9px] bg-white/10 border border-white/10 px-1.5 py-0.5 rounded text-gray-400">
-                              Node ID: {iss.nodeId}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs mt-1 font-medium">{iss.message}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <ValidationIssuesList issues={issues} />
             </motion.div>
           )}
 

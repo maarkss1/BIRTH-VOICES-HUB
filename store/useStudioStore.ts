@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { StudioNode, StudioEdge, NodeType, ValidationIssue } from '../lib/studio/types';
+import { StudioNode, StudioEdge, NodeType, ValidationIssue, WorkflowVersionSummary } from '../lib/studio/types';
 import { validationEngine } from '../lib/studio/ValidationEngine';
 import { addEdge, Connection } from '@xyflow/react';
 import { logger } from '../lib/logger';
@@ -119,6 +119,36 @@ export interface StudioState {
   publishState: 'idle' | 'publishing' | 'success' | 'error';
   publishIssues: ValidationIssue[];
   publishWorkflowToServer: () => Promise<void>;
+
+  // Identity of the persisted Workflow row this session is editing. Populated from whichever
+  // server round-trip resolves it first (load/save/publish/rollback) — GET/POST /workflow are
+  // scoped by tenant alone, but the version-history/rollback endpoints below are scoped by
+  // `:id`, so we need to know it client-side before we can call them.
+  workflowId: string | null;
+
+  // "Histórico de Publicações" panel (components/studio/panels/VersionHistoryPanel.tsx) + its
+  // rollback flow. `workflowVersions` always comes straight from `GET /workflow/:id/versions`
+  // for the current `workflowId` — never fabricated, never carried over from a previous
+  // workflow/tenant (AGENTS.md §14/§15): `openVersionHistory`/`fetchWorkflowVersions` always
+  // re-fetch against the current `workflowId` and `closeVersionHistory` never leaves stale data
+  // silently displayed as if it were still current.
+  isVersionHistoryOpen: boolean;
+  workflowVersions: WorkflowVersionSummary[];
+  versionHistoryState: 'idle' | 'loading' | 'error';
+  versionHistoryError: string | null;
+  openVersionHistory: () => void;
+  closeVersionHistory: () => void;
+  fetchWorkflowVersions: () => Promise<void>;
+
+  // Rollback is a destructive production action (replaces the currently active published
+  // content) — `VersionHistoryPanel` requires an explicit confirmation step before calling this,
+  // and a 422 (ValidationFailedError) here carries the same `issues[]` shape as
+  // `publishWorkflowToServer`'s rejection path, surfaced with the same `ValidationIssuesList`.
+  rollbackState: 'idle' | 'rolling-back' | 'success' | 'error';
+  rollbackIssues: ValidationIssue[];
+  rollbackError: string | null;
+  rollbackTargetVersion: number | null;
+  rollbackWorkflowToVersion: (version: number) => Promise<void>;
 }
 
 // Global node registry
@@ -591,6 +621,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   publishState: 'idle',
   publishIssues: [],
+
+  workflowId: null,
+
+  isVersionHistoryOpen: false,
+  workflowVersions: [],
+  versionHistoryState: 'idle',
+  versionHistoryError: null,
+
+  rollbackState: 'idle',
+  rollbackIssues: [],
+  rollbackError: null,
+  rollbackTargetVersion: null,
 
   // Node State mutators
   setNodes: (nodes) => set((state) => ({
@@ -1221,7 +1263,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           set({
             nodes: data.workflow.nodes,
             edges: data.workflow.edges,
-            nodeLifecycles: lifecycles
+            nodeLifecycles: lifecycles,
+            workflowId: data.workflow.id ?? null
           });
           get().addSimulationLog({
             type: 'success',
@@ -1236,13 +1279,17 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   saveWorkflowToServer: async () => {
     try {
       const { nodes, edges } = get();
-      await fetch('/api/workflow', {
+      const res = await fetch('/api/workflow', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ nodes, edges, name: "Voice Agent Flow" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (data.workflow?.id) {
+        set({ workflowId: data.workflow.id });
+      }
       get().addSimulationLog({
         type: 'info',
         message: 'Progresso do Canvas salvo de forma segura e persistente no banco de dados.'
@@ -1274,11 +1321,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const data = await res.json().catch(() => ({}));
 
       if (res.ok) {
-        set({ publishState: 'success', publishIssues: [] });
+        set({
+          publishState: 'success',
+          publishIssues: [],
+          workflowId: data.workflow?.id ?? get().workflowId
+        });
         get().addSimulationLog({
           type: 'success',
           message: 'Fluxo validado e publicado com sucesso. Status: ativo.'
         });
+        // A fresh publish archives a new version — keep an already-open history panel current
+        // instead of leaving it showing a now-stale list.
+        if (get().isVersionHistoryOpen) {
+          get().fetchWorkflowVersions();
+        }
         return;
       }
 
@@ -1296,6 +1352,122 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       get().addSimulationLog({
         type: 'error',
         message: 'Falha ao publicar: não foi possível contatar o servidor.'
+      });
+    }
+  },
+
+  // "Histórico de Publicações": GET /workflow/:id/versions, tenant/workflow-scoped server-side
+  // (workflowRepository.findWorkflowByIdForTenant — see workflowVersioning.test.ts). Never called
+  // with any id other than this session's own `workflowId`, so a version list can never mix
+  // tenants or workflows (AGENTS.md §15).
+  openVersionHistory: () => {
+    set({ isVersionHistoryOpen: true, rollbackState: 'idle', rollbackIssues: [], rollbackError: null });
+    get().fetchWorkflowVersions();
+  },
+
+  closeVersionHistory: () => {
+    set({ isVersionHistoryOpen: false });
+  },
+
+  fetchWorkflowVersions: async () => {
+    const { workflowId } = get();
+    if (!workflowId) {
+      // Nothing has round-tripped through the server yet (or nothing has ever been published) —
+      // a real empty state, never a fabricated placeholder list.
+      set({ workflowVersions: [], versionHistoryState: 'idle', versionHistoryError: null });
+      return;
+    }
+
+    set({ versionHistoryState: 'loading', versionHistoryError: null });
+    try {
+      const res = await fetch(`/api/workflow/${workflowId}/versions`);
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        set({
+          versionHistoryState: 'error',
+          workflowVersions: [],
+          versionHistoryError: data.error || 'Não foi possível carregar o histórico de publicações.'
+        });
+        return;
+      }
+
+      const versions: WorkflowVersionSummary[] = Array.isArray(data.versions) ? data.versions : [];
+      set({ versionHistoryState: 'idle', workflowVersions: versions, versionHistoryError: null });
+    } catch (err) {
+      logger.error('Error fetching workflow version history', { err });
+      set({
+        versionHistoryState: 'error',
+        workflowVersions: [],
+        versionHistoryError: 'Não foi possível contatar o servidor.'
+      });
+    }
+  },
+
+  rollbackWorkflowToVersion: async (version: number) => {
+    const { workflowId } = get();
+    if (!workflowId) return;
+
+    set({
+      rollbackState: 'rolling-back',
+      rollbackTargetVersion: version,
+      rollbackIssues: [],
+      rollbackError: null
+    });
+
+    try {
+      const res = await fetch(`/api/workflow/${workflowId}/versions/${version}/rollback`, {
+        method: 'POST'
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.workflow) {
+        const lifecycles: Record<string, NodeLifecycleState> = {};
+        (Array.isArray(data.workflow.nodes) ? data.workflow.nodes : []).forEach((n: { id: string }) => {
+          lifecycles[n.id] = 'Ready';
+        });
+        set({
+          nodes: data.workflow.nodes || [],
+          edges: data.workflow.edges || [],
+          nodeLifecycles: lifecycles,
+          workflowId: data.workflow.id ?? workflowId,
+          rollbackState: 'success',
+          rollbackTargetVersion: null
+        });
+        get().addSimulationLog({
+          type: 'success',
+          message: `Rollback concluído: versão ${version} restaurada e publicada como v${data.workflow.version}.`
+        });
+        // Rollback archives the version it superseded — refresh so the list reflects it.
+        await get().fetchWorkflowVersions();
+        return;
+      }
+
+      // 422 (ValidationFailedError) carries the same structured `issues` shape as
+      // publishWorkflowToServer's rejection path — surfaced with the same ValidationIssuesList,
+      // never a silent failure on a rejected rollback.
+      const issues: ValidationIssue[] = Array.isArray(data.issues) ? data.issues : [];
+      set({
+        rollbackState: 'error',
+        rollbackIssues: issues,
+        rollbackError: data.error || 'Não foi possível restaurar esta versão.',
+        rollbackTargetVersion: null
+      });
+      get().addSimulationLog({
+        type: 'error',
+        message: `Falha ao restaurar versão ${version}: ${data.error || res.statusText || 'erro desconhecido no servidor'}`
+      });
+    } catch (err) {
+      logger.error('Error rolling back workflow version', { err });
+      set({
+        rollbackState: 'error',
+        rollbackIssues: [],
+        rollbackError: 'Não foi possível contatar o servidor.',
+        rollbackTargetVersion: null
+      });
+      get().addSimulationLog({
+        type: 'error',
+        message: 'Falha ao restaurar versão: não foi possível contatar o servidor.'
       });
     }
   }

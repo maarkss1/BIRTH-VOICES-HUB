@@ -1,7 +1,7 @@
 - De: Agente 07 (Studio, Workflows e Colaboração)
 - Para: Agente 07 (backlog própria fila — próxima rodada de Studio)
 - Onda: 5
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -37,3 +37,9 @@ UI no Studio ainda. Fora de escopo explicitamente marcado como opcional para est
 ## Contexto adicional
 Backend já testado em `src/services/workflowVersioning.test.ts`. Sem bloqueador — pode ser pego em
 qualquer rodada futura de Studio.
+
+## Resolução
+
+Formalizado e implementado na Onda 6 — ver
+`.agents/handoffs/onda-6/00-para-07-studio-ui-historico-versoes.md` (seção "Resolução") para os
+detalhes completos (arquivos, testes, gate).
