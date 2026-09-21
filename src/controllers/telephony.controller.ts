@@ -23,6 +23,10 @@ function gatherActionUrl(sessionId: string): string {
   return `/api/telephony/twilio/gather?sessionId=${encodeURIComponent(sessionId)}`;
 }
 
+function dialActionUrl(sessionId: string): string {
+  return `/api/telephony/twilio/dial-status?sessionId=${encodeURIComponent(sessionId)}`;
+}
+
 /**
  * Builds the attributes for a `<Say>`/`<Gather><Say>` from an optional `voiceOverride` produced by
  * `prepareWorkflowTurn`/`resumeAfterTool` (see
@@ -46,11 +50,14 @@ type DialAttributes = Parameters<InstanceType<typeof VoiceResponse>['dial']>[0];
  * `record` are already validated/defaulted on the runtime side (Agente 04) — this only maps them
  * onto Twilio's own attribute names/values (`record: true` → the `'record-from-answer'` TwiML
  * value; `false` omits the attribute, matching Twilio's own default of not recording).
+ * When `sessionId` is provided, sets `action` callback to observe transfer status (completed/busy/no-answer).
  */
-function dialOptionsFor(transferDetails: TransferDetails): DialAttributes {
+function dialOptionsFor(transferDetails: TransferDetails, sessionId?: string): DialAttributes {
   return {
     timeout: transferDetails.timeoutSec,
     record: transferDetails.record ? 'record-from-answer' : undefined,
+    action: sessionId ? dialActionUrl(sessionId) : undefined,
+    method: 'POST',
   };
 }
 
@@ -155,13 +162,7 @@ export async function gatherHandler(req: Request, res: Response) {
   // itself "ended" on a transfer — see the contract doc).
   if (result.transferDetails) {
     twiml.say(sayOptions, result.reply);
-    twiml.dial(dialOptionsFor(result.transferDetails), result.transferDetails.to);
-    // No `action` URL: Twilio simply ends the `<Response>` once the `<Dial>` attempt finishes
-    // (answered-and-hung-up, no-answer, busy, or failed all behave the same way here) — there is
-    // no path back into the workflow after a transfer. Returning to the original conversation on a
-    // failed/unanswered transfer (via `action` + a `DialCallStatus` callback route) is a real
-    // telephony UX improvement, deliberately not implemented in this round — see
-    // `.agents/handoffs/onda-6/05-para-00-transfer-dial-outcome-followup.md`.
+    twiml.dial(dialOptionsFor(result.transferDetails, sessionId), result.transferDetails.to);
     return sendTwiml(res, twiml);
   }
 
@@ -198,4 +199,35 @@ export async function statusCallbackHandler(req: Request, res: Response) {
   }
 
   res.status(200).send();
+}
+
+/**
+ * Handles the action callback from Twilio when a <Dial> (e.g. human_handoff) completes or fails.
+ * Captures DialCallStatus (completed, busy, no-answer, failed, canceled) and logs duration.
+ * If not completed, provides a graceful Portuguese voice fallback message before hanging up.
+ */
+export async function dialStatusHandler(req: Request, res: Response) {
+  const sessionId = String(req.query.sessionId || '');
+  const dialCallStatus = String(req.body.DialCallStatus || '');
+  const dialCallDuration = Number(req.body.DialCallDuration || 0);
+  const twiml = new VoiceResponse();
+
+  logger.info('Twilio Dial status callback received', {
+    sessionId,
+    dialCallStatus,
+    dialCallDuration,
+  });
+
+  if (dialCallStatus === 'completed') {
+    twiml.hangup();
+    return sendTwiml(res, twiml);
+  }
+
+  // When human handoff was unanswered, busy, or failed, speak a clean fallback
+  twiml.say(
+    { language: 'pt-BR' },
+    'Não foi possível conectar com um atendente no momento. Por favor, tente novamente mais tarde.'
+  );
+  twiml.hangup();
+  sendTwiml(res, twiml);
 }

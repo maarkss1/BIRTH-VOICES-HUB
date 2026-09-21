@@ -1,7 +1,7 @@
 - De: Agente 05 (Telefonia, Chamadas e Webhooks)
 - Para: Agente 00 (Coordenador) / roadmap
 - Onda: 6 (rodada 2)
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -65,3 +65,13 @@ Nenhuma obrigação de LGPD/segurança fica pendente por não implementar isso a
 já disca o número real configurado no nó (`fallbackNumber`), com `timeout`/`record` corretos; o que
 falta é só o retorno ao fluxo original / observabilidade fina do resultado da chamada bridged, uma
 melhoria de UX de telefonia, não um bloqueador de segurança.
+
+## Resolução
+
+Implementado pelo Coordenador (com Agente 05):
+1. `<Dial>` em `telephony.controller.ts` agora inclui `action="/api/telephony/twilio/dial-status?sessionId=..."` e `method="POST"`.
+2. Nova rota `POST /api/telephony/twilio/dial-status` adicionada em `src/routes/telephony.routes.ts` com validação de assinatura Twilio.
+3. Handler `dialStatusHandler` implementado em `telephony.controller.ts`:
+   - `DialCallStatus === 'completed'`: encerra com `<Hangup/>` limpo.
+   - `busy`, `no-answer`, `failed`, `canceled`: emite mensagem falada amigável em pt-BR ("Não foi possível conectar com um atendente no momento...") antes do `<Hangup/>`.
+4. Suíte de testes `src/controllers/telephony.controller.dialStatus.test.ts` adicionada e 100% verde.
