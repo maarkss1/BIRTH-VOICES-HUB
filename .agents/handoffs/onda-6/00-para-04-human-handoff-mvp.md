@@ -1,7 +1,7 @@
 - De: Agente 00 (Coordenador)
 - Para: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Onda: 6 (rodada 2)
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Contexto
@@ -53,3 +53,7 @@ até o `human_handoff` devolve `mode: 'transfer'` com `transferDetails.to` igual
 `npm run typecheck && npm run lint && npx vitest run && npm run build` — todos limpos. Esta tarefa
 é independente das suas 3 tarefas da rodada 1 (já integradas em `integracao/onda-6`) — trabalhe a
 partir dessa branch.
+
+## Resolução (2026-09-21)
+Implementado na Onda 6 por Agente 04 (`workflowRuntimeService.ts`), integrado no `main` e complementado por Agente 05 (`telephony.controller.ts` e `telephony.routes.ts` com callback `dial-status`). Testes unitários completos e todos os gates aprovados.
+

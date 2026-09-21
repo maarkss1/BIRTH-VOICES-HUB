@@ -1,7 +1,7 @@
 - De: Agente 00 (Coordenador)
 - Para: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Onda: 6
-- Status: aberto
+- Status: resolvido
 - Prioridade: alta
 
 ## Contexto
@@ -99,3 +99,10 @@ Binário disfarçado de `.txt` (bytes não-UTF-8/não-imprimíveis) → rejeitad
 `npx prisma generate && npm run typecheck && npm run lint && npx vitest run && npm run build` —
 todos limpos. Documente em `.agents/handoffs/onda-6/04-para-00-*.md` (ou direto no PR, como preferir)
 qualquer desvio necessário desta especificação.
+
+## Resolução (2026-09-21)
+Implementado na Onda 6 por Agente 04 e integrado no `main`:
+1. Tarefa 1 (`tool_pending` + `resumeAfterTool`) implementada em `workflowRuntimeService.ts` com testes em `workflowRuntimeService.knowledgeTool.test.ts`.
+2. Tarefa 2 (`voiceOverride` para nó `voice`) implementada em `workflowRuntimeService.ts` com testes e consumo pelo Agente 05.
+3. Tarefa 3 (`POST /api/agents/:id/knowledge/upload` com ClamAV scan e heurística de texto) implementada em `knowledge.controller.ts` com testes em `knowledge.controller.test.ts` e conectada ao frontend em `pages/Dashboard/KnowledgeManager.tsx`.
+

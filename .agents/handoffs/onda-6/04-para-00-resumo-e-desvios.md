@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime, Motor de IA e Gateway)
 - Para: Agente 00 (Coordenador)
 - Onda: 6
-- Status: aberto
+- Status: resolvido
 - Prioridade: alto
 
 ## Problema
@@ -75,3 +75,7 @@ Se preferir que eu mesmo aplique a correção nos 3 arquivos de teste de outros 
 trivial de 1 linha cada) em vez de esperar 07/08, posso fazer mediante autorização explícita sua —
 não fiz por conta própria porque `AGENTS.md` §12.1 é claro ("o agente que não é dono do arquivo não
 faz a alteração").
+
+## Resolução (2026-09-21)
+Todas as dependências e desvios foram sanados: as fixtures dos outros agentes foram atualizadas com o tipo sintético, os contratos foram consumidos pelo Agente 05 com a inclusão de `dial-status`, e a suíte completa de 95 arquivos e 683 testes está 100% verde no `main`.
+
