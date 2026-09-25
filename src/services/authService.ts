@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import { hashPassword, verifyPassword, generateToken, generateRefreshToken, verifyRefreshToken, TokenPayload } from '../lib/auth-tokens.js';
 import { findUserByEmail, findUserById, createUser, createMembership, findMembershipWithRole } from '../repositories/userRepository.js';
 import { createTenant } from '../repositories/tenantRepository.js';
@@ -71,5 +71,5 @@ export async function refreshSession(refreshToken: string) {
 }
 
 export function newId(): string {
-  return crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  return uuidv4();
 }
