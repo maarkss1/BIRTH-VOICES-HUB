@@ -54,7 +54,7 @@
     "helmet": "^8.2.0",
     "ioredis": "^5.11.1",
     "lucide-react": "^0.563.0",
-    "motion": "^12.42.2",
+    "motion": "^13.2.0",
     "openai": "^6.47.0",
     "openid-client": "^6.8.4",
     "pino": "^10.3.1",
