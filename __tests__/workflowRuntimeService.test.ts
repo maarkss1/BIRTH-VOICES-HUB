@@ -63,15 +63,20 @@ describe('workflowRuntimeService capability gate', () => {
   it('fails closed for Studio nodes that the production phone runtime cannot execute yet', () => {
     const nodes = [
       node('start-1', 'start'),
-      node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'voice-x' }),
+      // Onda 6 history: this example node was 'voice' through rodada 1, then 'human_handoff'
+      // through rodada 2 — each got unblocked by a real feature within the same onda, breaking
+      // this test twice in a row (see .agents/handoffs/onda-6/04-para-08-*.md, both rodadas).
+      // Every real Studio NodeType is executable today, so a synthetic/nonexistent type is the
+      // only example that cannot be invalidated by a future feature unblocking a real node.
+      node('bogus-1', 'este_tipo_nao_existe' as unknown as NodeType, {}),
       node('end-1', 'end'),
     ];
-    const edges = [edge('e1', 'start-1', 'voice-1'), edge('e2', 'voice-1', 'end-1')];
+    const edges = [edge('e1', 'start-1', 'bogus-1'), edge('e2', 'bogus-1', 'end-1')];
 
     const issues = validateRuntimeCompatibility(nodes, edges);
 
     expect(issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'err-runtime-unsupported-voice-1', type: 'error' }),
+      expect.objectContaining({ id: 'err-runtime-unsupported-bogus-1', type: 'error' }),
     ]));
   });
 

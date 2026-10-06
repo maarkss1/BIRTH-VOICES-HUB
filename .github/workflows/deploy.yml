@@ -7,6 +7,14 @@ on:
         description: 'Commit SHA already validated by CI and present on main'
         required: true
         type: string
+      confirm_production:
+        description: 'Type DEPLOY to confirm a production release'
+        required: true
+        type: string
+      reason:
+        description: 'Release/change reason for the audit trail'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -34,7 +42,45 @@ jobs:
       contents: read
       actions: read
 
+    env:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+      PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+      PRODUCTION_REDIS_URL: ${{ secrets.PRODUCTION_REDIS_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      REFRESH_TOKEN_SECRET: ${{ secrets.REFRESH_TOKEN_SECRET }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
+      WEBHOOK_SIGNING_SECRET: ${{ secrets.WEBHOOK_SIGNING_SECRET }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+      BLAND_API_KEY: ${{ secrets.BLAND_API_KEY }}
+      BLAND_WEBHOOK_TOKEN: ${{ secrets.BLAND_WEBHOOK_TOKEN }}
+      BLAND_RECORD_CALLS: ${{ vars.BLAND_RECORD_CALLS }}
+      BLAND_RECORDING_APPROVED: ${{ vars.BLAND_RECORDING_APPROVED }}
+      ATLASGR_TENANT_ID: ${{ vars.ATLASGR_TENANT_ID }}
+      ATLASGR_BASE_URL: ${{ vars.ATLASGR_BASE_URL }}
+      ATLASGR_WEBHOOK_SECRET: ${{ secrets.ATLASGR_WEBHOOK_SECRET }}
+
     steps:
+      - name: Confirm explicit production intent
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirm_production }}" != "DEPLOY" ]; then
+            echo "::error::confirm_production must be exactly DEPLOY."
+            exit 1
+          fi
+          if [ ${#RELEASE_REASON} -lt 10 ]; then
+            echo "::error::Provide a meaningful release reason (at least 10 characters)."
+            exit 1
+          fi
+          echo "Release reason registered for audit."
+        env:
+          RELEASE_REASON: ${{ inputs.reason }}
+
       - name: Checkout tested commit
         uses: actions/checkout@v7
         with:
@@ -60,47 +106,14 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&status=completed&per_page=100")"
-
           successful_runs="$(printf '%s' "$response" | jq --arg sha "$TARGET_SHA" '[.workflow_runs[] | select(.name == "CI/CD Pipeline" and .head_sha == $sha and .conclusion == "success")] | length')"
           if [ "$successful_runs" -lt 1 ]; then
             echo "::error::No successful CI/CD Pipeline run found for TARGET_SHA=${TARGET_SHA}."
             exit 1
           fi
 
-      - name: Verify required production configuration
-        shell: bash
-        run: |
-          missing=()
-          [ -z "${{ secrets.GCP_PROJECT_ID }}" ] && missing+=("GCP_PROJECT_ID")
-          [ -z "${{ secrets.GCP_SA_KEY }}${{ secrets.GCP_CREDENTIALS }}" ] && missing+=("GCP_SA_KEY (or GCP_CREDENTIALS)")
-          [ -z "${{ secrets.PRODUCTION_DATABASE_URL }}" ] && missing+=("PRODUCTION_DATABASE_URL")
-          [ -z "${{ secrets.PRODUCTION_REDIS_URL }}" ] && missing+=("PRODUCTION_REDIS_URL")
-          [ -z "${{ secrets.JWT_SECRET }}" ] && missing+=("JWT_SECRET")
-          [ -z "${{ secrets.REFRESH_TOKEN_SECRET }}" ] && missing+=("REFRESH_TOKEN_SECRET")
-          [ -z "${{ secrets.GEMINI_API_KEY }}" ] && missing+=("GEMINI_API_KEY")
-          [ -z "${{ secrets.TWILIO_ACCOUNT_SID }}" ] && missing+=("TWILIO_ACCOUNT_SID")
-          [ -z "${{ secrets.TWILIO_AUTH_TOKEN }}" ] && missing+=("TWILIO_AUTH_TOKEN")
-          [ -z "${{ secrets.TWILIO_FROM_NUMBER }}" ] && missing+=("TWILIO_FROM_NUMBER")
-          [ -z "${{ secrets.WEBHOOK_SIGNING_SECRET }}" ] && missing+=("WEBHOOK_SIGNING_SECRET")
-          [ -z "${{ vars.PUBLIC_BASE_URL }}" ] && missing+=("PUBLIC_BASE_URL (production environment variable)")
-          [ -z "${{ vars.ALLOWED_ORIGINS }}" ] && missing+=("ALLOWED_ORIGINS (production environment variable)")
-
-          # AtlasGR/Bland is optional for the core Twilio product, but partial configuration is
-          # unsafe: callbacks, consent and CRM forwarding depend on the whole set. If any switch in
-          # this block is present, require every field before promotion.
-          atlasgr_requested="${{ secrets.BLAND_API_KEY }}${{ secrets.BLAND_WEBHOOK_TOKEN }}${{ secrets.ATLASGR_WEBHOOK_SECRET }}${{ vars.ATLASGR_TENANT_ID }}${{ vars.ATLASGR_BASE_URL }}"
-          if [ -n "$atlasgr_requested" ]; then
-            [ -z "${{ secrets.BLAND_API_KEY }}" ] && missing+=("BLAND_API_KEY")
-            [ -z "${{ secrets.BLAND_WEBHOOK_TOKEN }}" ] && missing+=("BLAND_WEBHOOK_TOKEN")
-            [ -z "${{ secrets.ATLASGR_WEBHOOK_SECRET }}" ] && missing+=("ATLASGR_WEBHOOK_SECRET")
-            [ -z "${{ vars.ATLASGR_TENANT_ID }}" ] && missing+=("ATLASGR_TENANT_ID (production environment variable)")
-            [ -z "${{ vars.ATLASGR_BASE_URL }}" ] && missing+=("ATLASGR_BASE_URL (production environment variable)")
-          fi
-
-          if [ ${#missing[@]} -ne 0 ]; then
-            printf '::error::Missing required production configuration: %s\n' "${missing[*]}"
-            exit 1
-          fi
+      - name: Validate production configuration contract
+        run: node scripts/validate-production-config.mjs
 
       - id: auth
         name: Authenticate to Google Cloud
@@ -181,6 +194,14 @@ jobs:
             OIDC_CLIENT_SECRET=${{ secrets.OIDC_CLIENT_SECRET }}
             OTEL_SERVICE_NAME=${{ vars.OTEL_SERVICE_NAME }}
             OTEL_EXPORTER_OTLP_ENDPOINT=${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+
+      - name: Verify deployed health endpoint
+        shell: bash
+        run: |
+          SERVICE_URL="${{ steps.deploy.outputs.url }}"
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --max-time 20 "${SERVICE_URL%/}/api/health" >/tmp/health.json
+          jq -e '.status == "ok" or .status == "healthy"' /tmp/health.json >/dev/null
+          echo "Post-deploy health check: OK"
 
       - name: Show deployed service URL
         run: echo "Service URL => ${{ steps.deploy.outputs.url }}"

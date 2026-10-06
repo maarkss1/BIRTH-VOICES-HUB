@@ -78,6 +78,19 @@ export interface ValidationIssue {
   message: string;
 }
 
+/**
+ * Client-side shape of one entry returned by `GET /workflow/:id/versions` — the "Histórico de
+ * Publicações" panel's list item (`components/studio/panels/VersionHistoryPanel.tsx`). Mirrors
+ * the subset of `PublishedWorkflowVersion` (src/services/workflowService.ts) the Studio actually
+ * renders; `nodes`/`edges`/`metadata` also come back on the wire but are not needed client-side —
+ * rollback re-fetches the full active workflow via its own response instead of the archive entry.
+ */
+export interface WorkflowVersionSummary {
+  version: number;
+  publishedAt: string; // ISO 8601
+  publishedBy: string | null;
+}
+
 export interface ValidationResult {
   isValid: boolean;
   issues: ValidationIssue[];

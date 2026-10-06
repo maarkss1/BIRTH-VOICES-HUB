@@ -1,7 +1,7 @@
 - De: Agente 04 (Voice Runtime e Gateway de IA)
 - Para: Agente 06 (Integrações Externas — Object Storage, Antivírus)
 - Onda: 2
-- Status: aberto
+- Status: resolvido
 - Prioridade: normal
 
 ## Problema
@@ -53,3 +53,11 @@ obrigatório assim que eu (ou outro agente) implementar esse upload.
 Nenhuma ação sua é necessária agora — isto é um registro para garantir que a política de AV que
 vocês implementaram na Onda 1 não seja esquecida quando o upload de arquivo for de fato
 implementado. Não há bloqueador ativo hoje porque não há caminho de upload de arquivo funcional.
+
+## Resolução (2026-09-21)
+Implementado na Onda 6 e integrado no `main`:
+1. Endpoint `POST /api/agents/:id/knowledge/upload` implementado em `src/controllers/knowledge.controller.ts` com validação de payload em base64 (`knowledgeUploadSchema`), decodificação em buffer e chamada obrigatória a `scanBufferForViruses(buffer, fileName)`.
+2. Política fail-closed: `InfectedFileError` retorna HTTP 422 com detalhes da ameaça; `AntivirusUnavailableError` retorna HTTP 503 com `Retry-After: 60`.
+3. Testes unitários completos cobrindo arquivo infectado (EICAR), scanner indisponível e arquivo íntegro em `src/controllers/knowledge.controller.test.ts`.
+4. Conexão completa na UI em `pages/Dashboard/KnowledgeManager.tsx` com modal de upload, leitura em base64 e tratamento dos status 422/503. Testes de frontend implementados em `pages/Dashboard/KnowledgeManager.test.tsx`.
+
