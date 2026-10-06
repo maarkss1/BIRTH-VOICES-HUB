@@ -1,9 +1,19 @@
 import { Request, Response } from 'express';
 import twilio from 'twilio';
 import * as telephonyService from '../services/telephonyService.js';
+import type { TransferDetails, VoiceOverride } from '../services/workflowRuntimeService.js';
 import { logger } from '../lib/logger.js';
 
 const { VoiceResponse } = twilio.twiml;
+
+// Twilio's own generated typings (`VoiceResponse.SayAttributes`) narrow `language`/`voice` to
+// large-but-closed literal unions of names Twilio actually recognizes. `VoiceOverride` (see
+// `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`) only ever carries a value drawn
+// from `workflowRuntimeService.ts`'s own `KNOWN_TWILIO_VOICE_NAMES` table — i.e. a genuine Twilio
+// voice name — so this alias plus the narrowing casts in `sayOptionsFor` below just bridge two
+// string types that are runtime-compatible by construction; it is not a blind `any`/`unknown`
+// escape hatch.
+type SayAttributes = Parameters<InstanceType<typeof VoiceResponse>['say']>[0];
 
 function sendTwiml(res: Response, twiml: InstanceType<typeof VoiceResponse>) {
   res.type('text/xml').send(twiml.toString());
@@ -11,6 +21,44 @@ function sendTwiml(res: Response, twiml: InstanceType<typeof VoiceResponse>) {
 
 function gatherActionUrl(sessionId: string): string {
   return `/api/telephony/twilio/gather?sessionId=${encodeURIComponent(sessionId)}`;
+}
+
+function dialActionUrl(sessionId: string): string {
+  return `/api/telephony/twilio/dial-status?sessionId=${encodeURIComponent(sessionId)}`;
+}
+
+/**
+ * Builds the attributes for a `<Say>`/`<Gather><Say>` from an optional `voiceOverride` produced by
+ * `prepareWorkflowTurn`/`resumeAfterTool` (see
+ * `.agents/handoffs/onda-6/04-para-05-voiceOverride-contrato.md`). Falls back to the fixed
+ * `pt-BR` default Twilio voice used everywhere else in this controller when no override is
+ * present (no `voice` node reached yet, or its configured voice has no known Twilio mapping).
+ */
+function sayOptionsFor(voiceOverride?: VoiceOverride): SayAttributes {
+  if (!voiceOverride) return { language: 'pt-BR' };
+  return {
+    language: (voiceOverride.language ?? 'pt-BR') as SayAttributes['language'],
+    voice: voiceOverride.voice as SayAttributes['voice'],
+  };
+}
+
+type DialAttributes = Parameters<InstanceType<typeof VoiceResponse>['dial']>[0];
+
+/**
+ * Builds the attributes for the `<Dial>` a `TransferDetails` (see
+ * `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`) produces. `timeoutSec`/
+ * `record` are already validated/defaulted on the runtime side (Agente 04) — this only maps them
+ * onto Twilio's own attribute names/values (`record: true` → the `'record-from-answer'` TwiML
+ * value; `false` omits the attribute, matching Twilio's own default of not recording).
+ * When `sessionId` is provided, sets `action` callback to observe transfer status (completed/busy/no-answer).
+ */
+function dialOptionsFor(transferDetails: TransferDetails, sessionId?: string): DialAttributes {
+  return {
+    timeout: transferDetails.timeoutSec,
+    record: transferDetails.record ? 'record-from-answer' : undefined,
+    action: sessionId ? dialActionUrl(sessionId) : undefined,
+    method: 'POST',
+  };
 }
 
 export async function incomingCallHandler(req: Request, res: Response) {
@@ -104,10 +152,24 @@ export async function gatherHandler(req: Request, res: Response) {
     return sendTwiml(res, twiml);
   }
 
+  const sayOptions = sayOptionsFor(result.voiceOverride);
+
+  // A published `human_handoff` node (see
+  // `.agents/handoffs/onda-6/04-para-05-transferDetails-contrato.md`) has no workflow resumption —
+  // a real telephony bridge takes over the call, so this speaks `transferDetails.message` and
+  // dials `transferDetails.to` for real instead of opening another `<Gather>`, regardless of
+  // `result.shouldEnd` (the runtime always reports `false` there since it never marks the workflow
+  // itself "ended" on a transfer — see the contract doc).
+  if (result.transferDetails) {
+    twiml.say(sayOptions, result.reply);
+    twiml.dial(dialOptionsFor(result.transferDetails, sessionId), result.transferDetails.to);
+    return sendTwiml(res, twiml);
+  }
+
   // A published Studio `end` node is a real termination boundary. Do not create another Gather
   // after it; speak the final response once and close the call deterministically.
   if (result.shouldEnd) {
-    twiml.say({ language: 'pt-BR' }, result.reply);
+    twiml.say(sayOptions, result.reply);
     twiml.hangup();
     return sendTwiml(res, twiml);
   }
@@ -119,7 +181,7 @@ export async function gatherHandler(req: Request, res: Response) {
     language: 'pt-BR',
     speechTimeout: 'auto',
   });
-  gather.say({ language: 'pt-BR' }, result.reply);
+  gather.say(sayOptions, result.reply);
   sendTwiml(res, twiml);
 }
 
@@ -137,4 +199,35 @@ export async function statusCallbackHandler(req: Request, res: Response) {
   }
 
   res.status(200).send();
+}
+
+/**
+ * Handles the action callback from Twilio when a <Dial> (e.g. human_handoff) completes or fails.
+ * Captures DialCallStatus (completed, busy, no-answer, failed, canceled) and logs duration.
+ * If not completed, provides a graceful Portuguese voice fallback message before hanging up.
+ */
+export async function dialStatusHandler(req: Request, res: Response) {
+  const sessionId = String(req.query.sessionId || '');
+  const dialCallStatus = String(req.body.DialCallStatus || '');
+  const dialCallDuration = Number(req.body.DialCallDuration || 0);
+  const twiml = new VoiceResponse();
+
+  logger.info('Twilio Dial status callback received', {
+    sessionId,
+    dialCallStatus,
+    dialCallDuration,
+  });
+
+  if (dialCallStatus === 'completed') {
+    twiml.hangup();
+    return sendTwiml(res, twiml);
+  }
+
+  // When human handoff was unanswered, busy, or failed, speak a clean fallback
+  twiml.say(
+    { language: 'pt-BR' },
+    'Não foi possível conectar com um atendente no momento. Por favor, tente novamente mais tarde.'
+  );
+  twiml.hangup();
+  sendTwiml(res, twiml);
 }

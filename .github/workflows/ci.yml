@@ -69,13 +69,10 @@ jobs:
     - name: Install Dependencies
       run: npm ci
 
-    # Scoped to the root workspace's production dependency tree (--workspaces=false), matching
-    # exactly what ships in the Docker image (see Dockerfile: only the root package is installed
-    # with --omit=dev; packages/sip-agent is a non-deployed PoC workspace, never copied into the
-    # image — see docs/AUDIT.md §2/§3.4). Auditing the full workspace tree here would fail CI on
-    # sip-agent's adm-zip/onnxruntime-node advisories even though nothing ships them.
-    - name: Audit production dependencies (high severity)
-      run: npm audit --omit=dev --audit-level=high --workspaces=false
+    - name: Runtime Dependency Audit
+      # Audit the same root runtime dependency set copied into the Cloud Run image. Experimental
+      # workspaces such as packages/sip-agent are not shipped by the production Docker stage.
+      run: npm audit --omit=dev --workspaces=false --audit-level=high
 
     - name: Prisma Generate
       run: npx prisma generate
@@ -140,11 +137,11 @@ jobs:
         # (which imports `appPromise` directly, never over HTTP) doesn't bind a real port or start
         # background workers. A smoke test that actually curls the container over HTTP needs the
         # real listening server, i.e. the same NODE_ENV Cloud Run itself runs with (see deploy.yml).
-        docker run -d --name ci-smoke -p 3000:3000 \
+        docker run -d --name ci-smoke -p 3000:3000 --network host \
           -e NODE_ENV=production \
           -e PORT=3000 \
-          -e DATABASE_URL="postgresql://devuser:devpassword@localhost:5432/birthvoices" \
-          -e REDIS_URL="redis://localhost:6379" \
+          -e DATABASE_URL="postgresql://devuser:devpassword@127.0.0.1:5432/birthvoices" \
+          -e REDIS_URL="redis://127.0.0.1:6379" \
           -e JWT_SECRET="ci_jwt_secret_do_not_use_in_production" \
           -e REFRESH_TOKEN_SECRET="ci_refresh_secret_do_not_use_in_production" \
           -e ALLOWED_ORIGINS="http://127.0.0.1:3000,http://localhost:3000" \

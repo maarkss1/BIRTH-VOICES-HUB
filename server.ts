@@ -15,7 +15,7 @@ import cors from "cors";
 import { randomUUID } from "crypto";
 import { Redis } from "ioredis";
 import { verifyToken } from "./src/lib/auth-tokens.js";
-import { getRedisUrl } from "./src/lib/env.js";
+import { getRedisUrl, getRedisRetryStrategy } from "./src/lib/env.js";
 import { runWithRequestId } from "./src/lib/requestContext.js";
 import { csrfProtection } from "./src/middlewares/index.js";
 import { createRateLimiter } from "./src/middlewares/rateLimit.js";
@@ -123,7 +123,9 @@ async function startServer() {
   const redisUrl = getRedisUrl();
   // Bounded retries + short timeouts so a Redis outage makes rate-limit/health checks fail fast
   // and degrade gracefully, instead of hanging every request forever waiting on the command queue.
-  const redisClient = new Redis(redisUrl, { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
+  // retryStrategy caps reconnect attempts at 10s apart (see getRedisRetryStrategy doc comment) so a
+  // real Redis outage doesn't turn into a reconnect-attempt log storm.
+  const redisClient = new Redis(redisUrl, { maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000, retryStrategy: getRedisRetryStrategy() });
   redisClient.on('error', (err) => logger.error('Redis client error', err.message));
 
   // General limiter for the whole API, applied before body parsing so an oversized/malformed

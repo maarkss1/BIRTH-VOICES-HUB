@@ -1,0 +1,703 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../repositories/workflowRepository.js', () => ({
+  findActiveWorkflowForTenant: vi.fn(),
+}));
+
+vi.mock('../repositories/agentRepository.js', () => ({
+  getAgent: vi.fn(),
+}));
+
+// `tool` node execution is gated on the same tenant consent required for external AI providers
+// (see workflowRuntimeService.ts#executeToolNodeAsync) — mocked here (not the real
+// settingService/tenantAiConsentRepository/Prisma chain) so these tests control consent state
+// directly instead of depending on the global Prisma mock's default empty result.
+vi.mock('./settingService.js', () => ({
+  getAiConsent: vi.fn(),
+}));
+
+import { findActiveWorkflowForTenant } from '../repositories/workflowRepository.js';
+import { getAgent } from '../repositories/agentRepository.js';
+import { getAiConsent } from './settingService.js';
+import {
+  initializeWorkflowRuntime,
+  prepareWorkflowTurn,
+  resumeAfterTool,
+  validateRuntimeCompatibility,
+} from './workflowRuntimeService.js';
+import type { StudioEdge, StudioNode, NodeType } from '../../lib/studio/types.js';
+import type { KnowledgeDocument } from '../../lib/voice-runtime/intelligence/KnowledgeConfidenceEngine.js';
+
+const mockFindActive = vi.mocked(findActiveWorkflowForTenant);
+const mockGetAgent = vi.mocked(getAgent);
+const mockGetAiConsent = vi.mocked(getAiConsent);
+const GRANTED_CONSENT = { granted: true, grantedAt: null, revokedAt: null, grantedByUserId: null };
+
+type ActiveWorkflow = Awaited<ReturnType<typeof findActiveWorkflowForTenant>>;
+type Agent = Awaited<ReturnType<typeof getAgent>>;
+
+function node(id: string, type: NodeType, config: Record<string, unknown> = {}): StudioNode {
+  return {
+    id,
+    type,
+    position: { x: 0, y: 0 },
+    data: { label: id, category: 'test', config },
+  } as StudioNode;
+}
+
+function edge(id: string, source: string, target: string, sourceHandle?: string, isFallback = false): StudioEdge {
+  return {
+    id,
+    source,
+    target,
+    sourceHandle,
+    type: 'studioEdge',
+    data: { isFallback },
+  } as StudioEdge;
+}
+
+function activeWorkflow(nodes: StudioNode[], edges: StudioEdge[], version = 1): NonNullable<ActiveWorkflow> {
+  return {
+    id: 'wf-1',
+    tenantId: 'tenant-1',
+    userId: 'user-1',
+    name: 'Fluxo com knowledge/tool',
+    status: 'active',
+    nodes,
+    edges,
+    metadata: {},
+    version,
+    createdBy: 'user-1',
+    updatedBy: 'user-1',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    deletedAt: null,
+  } as unknown as NonNullable<ActiveWorkflow>;
+}
+
+function agentWithKnowledge(id: string, tenantId: string, knowledge: KnowledgeDocument[]): NonNullable<Agent> {
+  return {
+    id,
+    tenantId,
+    userId: null,
+    name: 'Agente de teste',
+    model: 'gemini',
+    configuration: { knowledge },
+    phoneNumber: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    deletedAt: null,
+  } as unknown as NonNullable<Agent>;
+}
+
+const originalFetch = global.fetch;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Default to granted so tests that aren't specifically about the consent gate exercise the
+  // tool-execution mechanics unaffected; the dedicated consent tests below override this.
+  mockGetAiConsent.mockResolvedValue(GRANTED_CONSENT);
+});
+
+afterEach(() => {
+  global.fetch = originalFetch;
+});
+
+describe('validateRuntimeCompatibility: knowledge/tool/human_handoff are no longer blocked', () => {
+  it('accepts a graph using knowledge, tool and human_handoff nodes (no node type is unsupported today)', () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('knowledge-1', 'knowledge', { database: 'faq' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/lookup' }),
+      node('handoff-1', 'human_handoff', { department: 'vendas', fallbackNumber: '+5511999999999' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'knowledge-1'),
+      edge('e2', 'knowledge-1', 'tool-1'),
+      edge('e3', 'tool-1', 'handoff-1'),
+      edge('e4', 'handoff-1', 'end-1'),
+    ];
+
+    const issues = validateRuntimeCompatibility(nodes, edges);
+
+    expect(issues).toEqual([]);
+  });
+
+  it('accepts a human_handoff node with no fallbackNumber at publish time (the missing-destination case degrades at runtime, not at publish — see the dedicated describe block below)', () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('handoff-1', 'human_handoff', { department: 'vendas' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'handoff-1'),
+      edge('e2', 'handoff-1', 'end-1'),
+    ];
+
+    const issues = validateRuntimeCompatibility(nodes, edges);
+
+    expect(issues).toEqual([]);
+  });
+
+  it('rejects a tool node configured with an unsupported HTTP method', () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('tool-1', 'tool', { method: 'TRACE', endpoint: 'https://api.example.com/lookup' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'tool-1'), edge('e2', 'tool-1', 'end-1')];
+
+    const issues = validateRuntimeCompatibility(nodes, edges);
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'err-runtime-tool-method-tool-1', type: 'error' }),
+    ]));
+  });
+});
+
+describe('knowledge node execution', () => {
+  it('injects a confident match into the next prompt/LLM context', async () => {
+    const doc: KnowledgeDocument = {
+      id: 'doc-1',
+      name: 'faq',
+      keyword: 'reembolso',
+      content: 'Reembolsos são processados em até 5 dias úteis.',
+      addedAt: Date.now(),
+    };
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'pergunta' }),
+      node('knowledge-1', 'knowledge', { database: 'faq' }),
+      node('prompt-1', 'prompt', { promptText: 'Responda usando: {{knowledge_result}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'knowledge-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'knowledge-1', 'prompt-1'),
+      edge('e5', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+    mockGetAgent.mockResolvedValue(agentWithKnowledge('agent-1', 'tenant-1', [doc]));
+
+    const state = await initializeWorkflowRuntime('tenant-1', {}, 'agent-1');
+    expect(state?.currentNodeId).toBe('question-1');
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1', 'tenant-1');
+
+    const prepared = prepareWorkflowTurn(state!, 'Quero saber sobre reembolso');
+
+    expect(prepared.mode).toBe('llm');
+    expect(prepared.systemInstruction).toContain('Reembolsos são processados em até 5 dias úteis.');
+    expect(prepared.state.variables.knowledge_is_low_confidence).toBe('false');
+  });
+
+  it('never fabricates a result when nothing matches with enough confidence', async () => {
+    const doc: KnowledgeDocument = {
+      id: 'doc-1',
+      name: 'faq',
+      keyword: 'horario-de-funcionamento',
+      content: 'Atendemos de segunda a sexta, das 9h às 18h.',
+      addedAt: Date.now(),
+    };
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'pergunta' }),
+      node('knowledge-1', 'knowledge', { database: 'faq' }),
+      node('prompt-1', 'prompt', { promptText: 'Responda usando: {{knowledge_result}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'knowledge-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'knowledge-1', 'prompt-1'),
+      edge('e5', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+    mockGetAgent.mockResolvedValue(agentWithKnowledge('agent-1', 'tenant-1', [doc]));
+
+    const state = await initializeWorkflowRuntime('tenant-1', {}, 'agent-1');
+    const prepared = prepareWorkflowTurn(state!, 'Qual é a cor do céu?');
+
+    expect(prepared.state.variables.knowledge_is_low_confidence).toBe('true');
+    // The engine's own honest "no match" caveat, never a fabricated fact from the unrelated doc.
+    expect(prepared.systemInstruction).toContain('Não encontrei informações específicas sobre isso.');
+    expect(prepared.systemInstruction).toContain('Baixa confiança');
+    expect(prepared.systemInstruction).not.toContain('Atendemos de segunda a sexta');
+  });
+
+  it('never leaks another tenant\'s knowledge documents (agentId not owned by tenantId yields zero documents)', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('knowledge-1', 'knowledge', { database: 'faq' }),
+      node('prompt-1', 'prompt', { promptText: '{{knowledge_result}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'knowledge-1'),
+      edge('e2', 'knowledge-1', 'prompt-1'),
+      edge('e3', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+    // Simulates the real tenant-scoped repository call: an agentId belonging to another tenant
+    // (or simply unknown) resolves to no row at all — never another tenant's document set.
+    mockGetAgent.mockResolvedValue(null);
+
+    const state = await initializeWorkflowRuntime('tenant-1', {}, 'agent-from-another-tenant');
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-from-another-tenant', 'tenant-1');
+    expect(state?.variables.knowledge_is_low_confidence).toBe('true');
+    expect(state?.variables.knowledge_result).toContain('Não encontrei informações específicas sobre isso.');
+  });
+
+  it('runs with zero documents (never crashes) when no agentId is supplied', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('knowledge-1', 'knowledge', { database: 'faq' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'knowledge-1'), edge('e2', 'knowledge-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(mockGetAgent).not.toHaveBeenCalled();
+    expect(state?.ended).toBe(true);
+    expect(state?.variables.knowledge_is_low_confidence).toBe('true');
+  });
+});
+
+describe('tool node execution', () => {
+  it('executes a real HTTP call at call start (advanceUntilInteractionAsync) and exposes tool_ok', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"balance":42}', { status: 200 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/balance', timeoutMs: 2000 }),
+      node('prompt-1', 'prompt', { promptText: 'Saldo: {{tool_result}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'tool-1'),
+      edge('e2', 'tool-1', 'prompt-1'),
+      edge('e3', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(state?.variables.tool_ok).toBe('true');
+    expect(state?.variables.tool_result).toBe('{"balance":42}');
+  });
+
+  it('a blocked/failed tool call never throws and leaves a recoverable fallback for the next node', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      // Points at a cloud-metadata address: must be refused before any network call, and must not
+      // take down call setup.
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://169.254.169.254/latest/meta-data' }),
+      node('condition-1', 'condition', { variable: 'tool_ok', operator: 'equals', value: 'true' }),
+      node('end-ok', 'end'),
+      node('end-fail', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'tool-1'),
+      edge('e2', 'tool-1', 'condition-1'),
+      edge('e3', 'condition-1', 'end-ok', 'out-0'),
+      edge('e4', 'condition-1', 'end-fail', 'out-1', true),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(state).not.toBeNull();
+    expect(state?.variables.tool_ok).toBe('false');
+    expect(state?.variables.tool_error).toBe('blocked_url');
+    // The call kept going and routed on the failure branch instead of crashing.
+    expect(state?.currentNodeId).toBe('end-fail');
+    expect(state?.ended).toBe(true);
+  });
+
+  it('never calls the external endpoint when the tenant has not granted consent', async () => {
+    mockGetAiConsent.mockResolvedValue({ granted: false, grantedAt: null, revokedAt: null, grantedByUserId: null });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/balance' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'tool-1'), edge('e2', 'tool-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state?.variables.tool_ok).toBe('false');
+    expect(state?.variables.tool_error).toBe('consent_not_granted');
+  });
+
+  it('fails closed (never executes the call) when the consent check itself errors', async () => {
+    mockGetAiConsent.mockRejectedValue(new Error('database unavailable'));
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/balance' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'tool-1'), edge('e2', 'tool-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state?.variables.tool_ok).toBe('false');
+    expect(state?.variables.tool_error).toBe('consent_check_unavailable');
+  });
+
+  it('mid-call (prepareWorkflowTurn, synchronous) a tool node pauses as tool_pending instead of blocking, crashing, or faking a fallback (Onda 6)', () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup' }),
+      node('end-ok', 'end'),
+      node('end-fail', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-fail', 'out-1', true),
+      edge('e4', 'tool-1', 'end-ok'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    // Build the state synchronously (bypassing the real async init) to exercise exactly the
+    // synchronous `prepareWorkflowTurn` -> `advanceUntilInteraction` path a live phone turn uses.
+    const syntheticState = {
+      workflowId: 'wf-1',
+      version: 1,
+      currentNodeId: 'question-1',
+      variables: {},
+      preferredProvider: 'GoogleGemini' as const,
+      retries: {},
+      ended: false,
+      nodes: nodes.map((n) => ({ id: n.id, type: n.type, config: n.data.config ?? {} })),
+      edges: edges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: typeof e.sourceHandle === 'string' ? e.sourceHandle : null,
+        isFallback: e.data?.isFallback === true,
+        priority: 0,
+      })),
+    };
+
+    const prepared = prepareWorkflowTurn(syntheticState as Parameters<typeof prepareWorkflowTurn>[0], '12345678900');
+
+    // Never performs a real network call synchronously — that would require blocking the event
+    // loop, which this runtime refuses to do. As of Onda 6, it also never fakes a tool failure:
+    // it pauses the graph at the `tool` node and reports `tool_pending` so the caller can resume
+    // asynchronously via `resumeAfterTool`.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(prepared.mode).toBe('tool_pending');
+    expect(prepared.shouldEnd).toBe(false);
+    expect(prepared.state.currentNodeId).toBe('tool-1');
+    expect(prepared.state.variables.tool_ok).toBeUndefined();
+  });
+
+  it('resumeAfterTool executes the real HTTP call for a tool node reached mid-call and continues the graph (start -> question -> tool -> prompt)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"cpf_status":"valido"}', { status: 200 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup?cpf={{cpf}}' }),
+      node('prompt-1', 'prompt', { promptText: 'Resultado da consulta: {{tool_result}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'tool-1', 'prompt-1'),
+      edge('e5', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    expect(state?.currentNodeId).toBe('question-1');
+
+    const afterQuestion = prepareWorkflowTurn(state!, '12345678900');
+    expect(afterQuestion.mode).toBe('tool_pending');
+    expect(afterQuestion.state.currentNodeId).toBe('tool-1');
+    // The variable collected at the previous `question` node is already in the paused state,
+    // ready for the tool's endpoint template to interpolate once resumed.
+    expect(afterQuestion.state.variables.cpf).toBe('12345678900');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const pendingNode = afterQuestion.state.nodes.find((n) => n.id === afterQuestion.state.currentNodeId)!;
+    const resumed = await resumeAfterTool(afterQuestion.state, pendingNode);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.example.com/cpf-lookup?cpf=12345678900');
+    expect(resumed.state.variables.tool_ok).toBe('true');
+    expect(resumed.state.variables.tool_result).toBe('{"cpf_status":"valido"}');
+    expect(resumed.mode).toBe('llm');
+    expect(resumed.systemInstruction).toBe('Resultado da consulta: {"cpf_status":"valido"}');
+    expect(resumed.shouldEnd).toBe(true);
+    expect(resumed.state.currentNodeId).toBe('end-1');
+  });
+
+  it('resumeAfterTool degrades to the tool_error fallback (never crashes) when the real call fails, and consent gates it exactly like call-start', async () => {
+    mockGetAiConsent.mockResolvedValue({ granted: false, grantedAt: null, revokedAt: null, grantedByUserId: null });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup' }),
+      node('condition-1', 'condition', { variable: 'tool_ok', operator: 'equals', value: 'true' }),
+      node('end-ok', 'end'),
+      node('end-fail', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-fail', 'out-1', true),
+      edge('e4', 'tool-1', 'condition-1'),
+      edge('e5', 'condition-1', 'end-ok', 'out-0'),
+      edge('e6', 'condition-1', 'end-fail', 'out-1', true),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const afterQuestion = prepareWorkflowTurn(state!, '12345678900');
+    const pendingNode = afterQuestion.state.nodes.find((n) => n.id === afterQuestion.state.currentNodeId)!;
+
+    const resumed = await resumeAfterTool(afterQuestion.state, pendingNode);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(resumed.state.variables.tool_ok).toBe('false');
+    expect(resumed.state.variables.tool_error).toBe('consent_not_granted');
+    expect(resumed.state.currentNodeId).toBe('end-fail');
+    expect(resumed.mode).toBe('direct');
+    expect(resumed.shouldEnd).toBe(true);
+  });
+});
+
+describe('voice node execution (Onda 6 MVP: Twilio-native named TTS)', () => {
+  it('resolves a voiceOverride when the node is configured with an already-valid Twilio/Polly voice name', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('voice-1', 'voice', { provider: 'Twilio', voiceId: 'Polly.Camila', language: 'pt-BR' }),
+      node('prompt-1', 'prompt', { promptText: 'Olá!' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'voice-1'),
+      edge('e2', 'voice-1', 'prompt-1'),
+      edge('e3', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'oi');
+
+    expect(prepared.voiceOverride).toEqual({ voice: 'Polly.Camila', language: 'pt-BR' });
+  });
+
+  it('never fabricates a Twilio voice name for the Studio default (ElevenLabs) — omits voiceOverride instead', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('voice-1', 'voice', { provider: 'ElevenLabs', voiceId: 'Rachel_pt_BR' }),
+      node('prompt-1', 'prompt', { promptText: 'Olá!' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'voice-1'),
+      edge('e2', 'voice-1', 'prompt-1'),
+      edge('e3', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'oi');
+
+    expect(prepared.voiceOverride).toBeUndefined();
+  });
+
+  it('is a passive node: it never blocks on its own outgoing edge and does not itself interact with the caller', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('voice-1', 'voice', { provider: 'Twilio', voiceId: 'Ricardo' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'voice-1'), edge('e2', 'voice-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(state?.currentNodeId).toBe('end-1');
+    expect(state?.ended).toBe(true);
+  });
+});
+
+describe('human_handoff node execution (Onda 6 rodada 2 MVP: direct dial to the node\'s own literal fallbackNumber)', () => {
+  it('mid-call: prepareWorkflowTurn reaching human_handoff returns mode "transfer" with transferDetails.to equal to the configured fallbackNumber (start -> question -> human_handoff -> end)', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'intent' }),
+      node('handoff-1', 'human_handoff', {
+        department: 'Suporte Técnico',
+        fallbackNumber: '+5511999999999',
+        ringTimeoutSec: 45,
+        recordCall: 'true',
+        transferMessage: 'Só um instante, vou te transferir.',
+      }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'handoff-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'handoff-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    expect(state?.currentNodeId).toBe('question-1');
+
+    const prepared = prepareWorkflowTurn(state!, 'Preciso falar com um atendente');
+
+    expect(prepared.mode).toBe('transfer');
+    expect(prepared.shouldEnd).toBe(false);
+    expect(prepared.state.currentNodeId).toBe('handoff-1');
+    expect(prepared.transferDetails).toEqual({
+      to: '+5511999999999',
+      timeoutSec: 45,
+      record: true,
+      message: 'Só um instante, vou te transferir.',
+      department: 'Suporte Técnico',
+    });
+  });
+
+  it('applies honest defaults when ringTimeoutSec/recordCall/transferMessage/department are absent', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'intent' }),
+      node('handoff-1', 'human_handoff', { fallbackNumber: '+5511988887777' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'handoff-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'handoff-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'Quero um atendente');
+
+    expect(prepared.mode).toBe('transfer');
+    expect(prepared.transferDetails).toEqual({
+      to: '+5511988887777',
+      timeoutSec: 30,
+      record: false,
+      message: 'Aguarde um momento enquanto encaminho sua ligação.',
+    });
+  });
+
+  it('never fabricates a transfer destination when fallbackNumber is missing/empty — degrades like a failed tool and continues on the default path instead', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Como posso ajudar?', variableToSave: 'intent' }),
+      node('handoff-1', 'human_handoff', { department: 'vendas', fallbackNumber: '' }),
+      node('prompt-1', 'prompt', { promptText: 'Sem transferência disponível: {{handoff_error}}' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'handoff-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'handoff-1', 'prompt-1'),
+      edge('e5', 'prompt-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const prepared = prepareWorkflowTurn(state!, 'Quero um atendente');
+
+    expect(prepared.mode).not.toBe('transfer');
+    expect(prepared.transferDetails).toBeUndefined();
+    expect(prepared.mode).toBe('llm');
+    expect(prepared.systemInstruction).toBe('Sem transferência disponível: fallback_number_missing');
+    expect(prepared.state.variables.handoff_ok).toBe('false');
+    expect(prepared.state.variables.handoff_error).toBe('fallback_number_missing');
+  });
+
+  it('reached in the initial segment (start -> human_handoff), initializeWorkflowRuntime stops there without fabricating a transfer, and the very next prepareWorkflowTurn call re-signals "transfer" (defensive re-check, same shape as the tool node\'s)', async () => {
+    const nodes = [
+      node('start-1', 'start'),
+      node('handoff-1', 'human_handoff', { fallbackNumber: '+5511977776666' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [edge('e1', 'start-1', 'handoff-1'), edge('e2', 'handoff-1', 'end-1')];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+
+    expect(state?.currentNodeId).toBe('handoff-1');
+    expect(state?.ended).toBe(false);
+
+    const prepared = prepareWorkflowTurn(state!, '');
+
+    expect(prepared.mode).toBe('transfer');
+    expect(prepared.transferDetails?.to).toBe('+5511977776666');
+  });
+
+  it('a tool node followed immediately by human_handoff: resumeAfterTool continues the walk and reports "transfer" for the caller to bridge', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const nodes = [
+      node('start-1', 'start'),
+      node('question-1', 'question', { questionText: 'Qual seu CPF?', variableToSave: 'cpf' }),
+      node('tool-1', 'tool', { method: 'GET', endpoint: 'https://api.example.com/cpf-lookup' }),
+      node('handoff-1', 'human_handoff', { fallbackNumber: '+5511966665555' }),
+      node('end-1', 'end'),
+    ];
+    const edges = [
+      edge('e1', 'start-1', 'question-1'),
+      edge('e2', 'question-1', 'tool-1', 'out-0'),
+      edge('e3', 'question-1', 'end-1', 'out-1', true),
+      edge('e4', 'tool-1', 'handoff-1'),
+      edge('e5', 'handoff-1', 'end-1'),
+    ];
+    mockFindActive.mockResolvedValue(activeWorkflow(nodes, edges));
+
+    const state = await initializeWorkflowRuntime('tenant-1');
+    const afterQuestion = prepareWorkflowTurn(state!, '12345678900');
+    expect(afterQuestion.mode).toBe('tool_pending');
+
+    const pendingNode = afterQuestion.state.nodes.find((n) => n.id === afterQuestion.state.currentNodeId)!;
+    const resumed = await resumeAfterTool(afterQuestion.state, pendingNode);
+
+    expect(resumed.mode).toBe('transfer');
+    expect(resumed.shouldEnd).toBe(false);
+    expect(resumed.transferDetails?.to).toBe('+5511966665555');
+    expect(resumed.state.currentNodeId).toBe('handoff-1');
+  });
+});

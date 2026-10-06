@@ -30,6 +30,7 @@ model Tenant {
   wallet             Wallet?
   transactions       Transaction[]
   apiKeys            APIKey[]
+  webhookEndpoints   TenantWebhookEndpoint[]
 }
 
 model User {
@@ -112,8 +113,32 @@ model Workflow {
   createdBy String?
   updatedBy String?
 
+  versions WorkflowVersion[]
+
   @@index([tenantId])
   @@index([userId])
+}
+
+// Histórico de publish navegável para Workflow (Agente 07 — Studio, Workflows e Colaboração),
+// pedido via .agents/handoffs/onda-5/07-para-01-schema-workflow-version.md. Uma linha por versão
+// publicada: workflowService.ts#publishWorkflow arquiva aqui uma cópia imutável de
+// nodes/edges/metadata no momento do publish, e rollbackToVersion lê de volta uma versão anterior.
+// A migração não faz backfill retroativo de metadata.publishedVersions (a interinidade em JSON
+// usada antes deste model existir) — a partir desta migração, a tabela passa a ser a fonte de
+// verdade para novas publicações; o JSON antigo permanece congelado, sem ser lido.
+model WorkflowVersion {
+  id          String   @id @default(uuid())
+  workflowId  String
+  workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  version     Int
+  nodes       Json
+  edges       Json
+  metadata    Json     @default("{}")
+  publishedAt DateTime @default(now())
+  publishedBy String?
+
+  @@unique([workflowId, version])
+  @@index([workflowId])
 }
 
 model Session {
@@ -310,6 +335,38 @@ model APIKey {
 
   @@index([tenantId])
   @@index([createdByUserId])
+}
+
+// Um endpoint de webhook configurado por um tenant admin (Developers.tsx, Agente 05 — Telefonia,
+// Chamadas e Webhooks), pedido via
+// .agents/handoffs/onda-5/05-para-01-schema-webhook-endpoint.md. secretHash é o único segredo
+// persistido (SHA-256 hex do valor `whsec_...` mostrado em texto plano uma única vez na
+// criação/regeneração) — nunca o texto plano, mesma disciplina de credencial já aplicada a
+// APIKey.keyHash acima. webhook.worker.ts usa secretHash diretamente como chave HMAC-SHA256 ao
+// assinar cada entrega, resolvida ao vivo a cada tentativa (nunca cacheada do momento do enqueue).
+model TenantWebhookEndpoint {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  url      String
+  secretHash String // SHA-256 hex — nunca texto plano
+
+  // Lista de tipos de evento assinados (ex.: ["call.completed", "lead.qualified"]) ou ["*"] para
+  // todos. Json em vez de uma tabela separada de junção porque a cardinalidade é pequena (no
+  // máximo dezenas de tipos de evento no catálogo) e não precisa ser consultável por SQL — o
+  // filtro é feito em memória em webhookEndpointService.resolveActiveEndpointsForEvent, mesmo
+  // padrão já usado por APIKey.scopes.
+  events Json @default("[]")
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lastDeliveryAt     DateTime?
+  lastDeliveryStatus String?
+
+  @@index([tenantId])
 }
 
 model Integration {

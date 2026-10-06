@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UI/UX DESIGN SYSTEM & INTERFACE ANALYSIS | Repository Intelligence</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #3b82f6;
+            --sidebar-width: 280px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            line-height: 1.6;
+            display: flex;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: var(--sidebar-width);
+            background-color: var(--surface);
+            border-right: 1px solid var(--border);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            overflow-y: auto;
+            padding: 2rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            font-weight: 700;
+            font-size: 1.25rem;
+            color: var(--primary);
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-section {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .nav-section-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .nav-link {
+            text-decoration: none;
+            color: var(--text-main);
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .nav-link:hover {
+            background-color: #f1f5f9;
+            color: var(--primary);
+        }
+
+        .nav-link.active {
+            background-color: #eff6ff;
+            color: var(--primary-dark);
+            font-weight: 600;
+        }
+
+        /* Main Content area */
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 3rem 4rem;
+            width: calc(100% - var(--sidebar-width));
+            max-width: 1200px;
+        }
+
+        /* Typography */
+        h1, h2, h3, h4 {
+            color: var(--text-main);
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        h1 { font-size: 2.25rem; margin-top: 0; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid var(--border); }
+        h2 { font-size: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+        h3 { font-size: 1.25rem; }
+
+        p { margin-bottom: 1.5rem; }
+
+        ul, ol { margin-bottom: 1.5rem; padding-left: 1.5rem; }
+        li { margin-bottom: 0.5rem; }
+
+        /* UI Components */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background-color: #f8fafc;
+            font-weight: 600;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1;
+        }
+
+        .badge.implemented { background: #dcfce7; color: #166534; }
+        .badge.partial { background: #fef9c3; color: #854d0e; }
+        .badge.missing { background: #fee2e2; color: #991b1b; }
+        .badge.unverified { background: #f1f5f9; color: #475569; }
+        .badge.inference { background: #e0e7ff; color: #3730a3; }
+
+        .badge.critical { background: #fee2e2; color: #991b1b; }
+        .badge.high { background: #ffedd5; color: #9a3412; }
+        .badge.medium { background: #fef9c3; color: #854d0e; }
+        .badge.low { background: #f1f5f9; color: #475569; }
+
+        pre {
+            background-color: #1e293b;
+            color: #f8fafc;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+        }
+
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background-color: #f1f5f9;
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            font-size: 0.875em;
+            color: #b91c1c;
+        }
+
+        pre code {
+            background-color: transparent;
+            padding: 0;
+            color: inherit;
+        }
+
+        .evidence-box {
+            background-color: #f8fafc;
+            border-left: 4px solid var(--primary);
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.5rem;
+            border-radius: 0 0.5rem 0.5rem 0;
+            font-size: 0.875rem;
+        }
+
+        .evidence-box strong {
+            color: var(--primary-dark);
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+
+        /* Flow Diagrams */
+        .flow-diagram {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            font-family: monospace;
+            white-space: pre;
+            overflow-x: auto;
+            color: var(--primary-dark);
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <nav class="sidebar">
+        <a href="00-INDEX.html" class="sidebar-header">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+            Doc Hub
+        </a>
+
+        <div class="nav-section">
+            <span class="nav-section-title">Core</span>
+            <a href="00-INDEX.html" class="nav-link ">Overview</a>
+            <a href="01-PRD.html" class="nav-link ">01. Product (PRD)</a>
+            <a href="02-TRD.html" class="nav-link ">02. Technical (TRD)</a>
+        </div>
+
+        <div class="nav-section">
+            <span class="nav-section-title">Architecture</span>
+            <a href="03-APP-FLOW.html" class="nav-link ">03. App Flow</a>
+            <a href="04-UI-UX-DESIGN.html" class="nav-link active">04. UI/UX</a>
+            <a href="05-BACKEND-SCHEMA.html" class="nav-link ">05. Backend Schema</a>
+        </div>
+
+        <div class="nav-section">
+            <span class="nav-section-title">Planning</span>
+            <a href="06-IMPLEMENTATION-PLAN.html" class="nav-link ">06. Implementation</a>
+        </div>
+    </nav>
+
+    <main class="main-content">
+
+      <h1>UI/UX Design System</h1>
+
+      <div class="card">
+        <h2>Fundamentos</h2>
+        <ul>
+            <li><strong>Framework:</strong> React + Tailwind CSS (<code>@tailwindcss/vite</code> v4)</li>
+            <li><strong>Ícones:</strong> Lucide React</li>
+            <li><strong>Componentes Base:</strong> Diretório <code>components/ui/</code> e <code>src/components/</code></li>
+            <li><strong>Estado Global:</strong> Zustand</li>
+        </ul>
+      </div>
+
+      <h2>Componentes Identificados (Parcial)</h2>
+      <table>
+        <thead>
+            <tr>
+                <th>Componente</th>
+                <th>Localização</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Editor de Fluxo (Studio)</td>
+                <td><code>components/</code> (Usa xyflow)</td>
+                <td><span class="badge implemented">IMPLEMENTADO</span></td>
+            </tr>
+            <tr>
+                <td>Formulários Auth</td>
+                <td><code>pages/</code></td>
+                <td><span class="badge implemented">IMPLEMENTADO</span></td>
+            </tr>
+            <tr>
+                <td>Gráficos</td>
+                <td>Dependência <code>recharts</code></td>
+                <td><span class="badge implemented">IMPLEMENTADO</span></td>
+            </tr>
+        </tbody>
+      </table>
+
+    </main>
+</body>
+</html>

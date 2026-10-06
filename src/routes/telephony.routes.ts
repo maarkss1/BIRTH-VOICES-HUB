@@ -1,6 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import twilio from 'twilio';
-import { incomingCallHandler, outboundCallHandler, gatherHandler, statusCallbackHandler } from '../controllers/telephony.controller.js';
+import { incomingCallHandler, outboundCallHandler, gatherHandler, statusCallbackHandler, dialStatusHandler } from '../controllers/telephony.controller.js';
 import { logger } from '../lib/logger.js';
 
 const router = express.Router();
@@ -40,5 +40,6 @@ router.post('/telephony/twilio/voice', validateTwilioSignature, incomingCallHand
 router.post('/telephony/twilio/outbound', validateTwilioSignature, outboundCallHandler);
 router.post('/telephony/twilio/gather', validateTwilioSignature, gatherHandler);
 router.post('/telephony/twilio/status', validateTwilioSignature, statusCallbackHandler);
+router.post('/telephony/twilio/dial-status', validateTwilioSignature, dialStatusHandler);
 
 export default router;

@@ -122,24 +122,28 @@ export function isPrivateOrReservedHost(hostname: string): boolean {
   return false;
 }
 
+// Shared SSRF-safety predicate behind every "tenant-supplied server-side POST target" field in
+// this file (callbackUrl below, webhookEndpointUrlSchema further down) — one place to keep HTTPS
+// enforcement and the private/reserved-host check from silently drifting apart between fields.
+function isSafePublicUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && process.env.NODE_ENV !== 'production')) {
+    return false;
+  }
+  return !isPrivateOrReservedHost(parsed.hostname);
+}
+
 const callbackUrlSchema = z
   .string()
   .url('callbackUrl deve ser uma URL válida')
-  .refine(
-    (value) => {
-      let parsed: URL;
-      try {
-        parsed = new URL(value);
-      } catch {
-        return false;
-      }
-      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && process.env.NODE_ENV !== 'production')) {
-        return false;
-      }
-      return !isPrivateOrReservedHost(parsed.hostname);
-    },
-    { message: 'callbackUrl deve ser uma URL pública válida (HTTPS, sem apontar para rede interna/privada).' },
-  );
+  .refine(isSafePublicUrl, {
+    message: 'callbackUrl deve ser uma URL pública válida (HTTPS, sem apontar para rede interna/privada).',
+  });
 
 export const outboundCallSchema = z.object({
   agentId: z.string().min(1, 'agentId é obrigatório'),
@@ -150,4 +154,25 @@ export const outboundCallSchema = z.object({
     .regex(/^\+[1-9]\d{7,14}$/, 'targetNumber deve estar no formato E.164 (ex: +5511999998888)'),
   context: z.record(z.string(), z.any()).optional(),
   callbackUrl: callbackUrlSchema.optional(),
+});
+
+// webhookEndpoint.controller.ts (Agente 05) — POST /api/developers/webhooks. A tenant-configured
+// webhook destination is exactly as sensitive as a per-call callbackUrl (both are server-side POST
+// targets a client fully controls), so it is constrained by the exact same rule (isSafePublicUrl)
+// — reused, not reimplemented. webhook.worker.ts's isSafeWebhookUrl re-checks this again at
+// delivery time as defense-in-depth (job data is not guaranteed to always come from a value this
+// schema validated), same relationship it already has with callbackUrlSchema.
+export const webhookEndpointUrlSchema = z
+  .string()
+  .url('url deve ser uma URL válida')
+  .refine(isSafePublicUrl, {
+    message: 'url deve ser uma URL pública válida (HTTPS, sem apontar para rede interna/privada).',
+  });
+
+export const createWebhookEndpointSchema = z.object({
+  url: webhookEndpointUrlSchema,
+  events: z
+    .array(z.string().min(1, 'Tipo de evento inválido'))
+    .min(1, 'events deve conter ao menos um tipo de evento (ex.: ["call.completed"] ou ["*"] para todos)')
+    .max(20, 'events aceita no máximo 20 tipos por endpoint'),
 });

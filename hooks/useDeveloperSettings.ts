@@ -23,6 +23,7 @@ type ApiKeysState =
 interface DialogConfirmState {
   title: string;
   message: string;
+  confirmLabel?: string;
   onConfirm: () => void;
 }
 
@@ -36,9 +37,37 @@ interface CreatedKeyReveal {
   key: string;
 }
 
-interface WebhookLog {
-  status: number;
-  body: string;
+// Webhook endpoints: real backend now exists (Onda 5,
+// .agents/handoffs/onda-5/00-para-02-conectar-developers-webhooks.md), same admin-only
+// authorization level as API keys — POST/GET/DELETE /api/developers/webhooks plus
+// POST /api/developers/webhooks/:id/regenerate-secret. Metadata never includes the secret or its
+// hash; the plaintext secret is only ever present in a create/regenerate response, exactly once
+// (AGENTS.md §13), same shape as ApiKeyMetadata/CreatedKeyReveal above.
+export interface WebhookEndpointMetadata {
+  id: string;
+  url: string;
+  events: string[];
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastDeliveryAt: string | null;
+  lastDeliveryStatus: string | null;
+}
+
+type WebhookEndpointsState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  // 503 from the backend: the tenant-scoped persistence for webhook endpoints has not been
+  // deployed yet (see webhookEndpoint.controller.ts's WebhookEndpointSchemaNotReadyError handling).
+  // Must never be rendered as an empty list — that would fabricate "nenhum endpoint configurado"
+  // for a tenant that may well have endpoints once persistence lands (AGENTS.md §14).
+  | { status: 'unavailable' }
+  | { status: 'ready'; data: WebhookEndpointMetadata[] };
+
+interface CreatedWebhookSecretReveal {
+  id: string;
+  url: string;
+  secret: string;
 }
 
 export function useDeveloperSettings() {
@@ -56,10 +85,21 @@ export function useDeveloperSettings() {
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const [dialogConfirm, setDialogConfirm] = useState<DialogConfirmState | null>(null);
 
-  // Webhooks tab: no backend yet (.agents/handoffs/onda-4/01-para-00-webhooks-tenant-fora-de-escopo.md,
-  // still unowned) — state untouched from the Onda 2 mitigation, kept purely client-side/simulated.
-  const [testWebhookModal, setTestWebhookModal] = useState<string | null>(null);
-  const [webhookLog, setWebhookLog] = useState<WebhookLog | null>(null);
+  // Webhook endpoints: real backend now connected (see WebhookEndpointsState above). Deliberately
+  // no client-side "simulate test send" here anymore — the previous Onda 2 placeholder faked a 200
+  // response without contacting anything, and there is no test-send endpoint in the real contract
+  // to back it; keeping a fabricated success response next to real endpoint management would read
+  // as real delivery evidence when it isn't (AGENTS.md §14).
+  const [webhooksState, setWebhooksState] = useState<WebhookEndpointsState>({ status: 'loading' });
+  const [showCreateWebhookModal, setShowCreateWebhookModal] = useState(false);
+  const [newWebhookUrl, setNewWebhookUrl] = useState('');
+  const [newWebhookEvents, setNewWebhookEvents] = useState('');
+  const [isCreatingWebhook, setIsCreatingWebhook] = useState(false);
+  const [createWebhookError, setCreateWebhookError] = useState<string | null>(null);
+  const [createdWebhookSecretReveal, setCreatedWebhookSecretReveal] = useState<CreatedWebhookSecretReveal | null>(null);
+  const [deletingWebhookId, setDeletingWebhookId] = useState<string | null>(null);
+  const [webhookActionError, setWebhookActionError] = useState<string | null>(null);
+  const [regeneratingWebhookId, setRegeneratingWebhookId] = useState<string | null>(null);
 
   const fetchKeys = useCallback(() => {
     if (!isAdmin) return;
@@ -82,13 +122,31 @@ export function useDeveloperSettings() {
     fetchKeys();
   }, [fetchKeys]);
 
-  const handleTestWebhook = (e: React.FormEvent) => {
-    e.preventDefault();
-    setWebhookLog({
-      status: 200,
-      body: JSON.stringify({ success: true, message: 'Evento recebido com sucesso' }, null, 2)
-    });
-  };
+  const fetchWebhooks = useCallback(() => {
+    if (!isAdmin) return;
+    setWebhooksState({ status: 'loading' });
+    fetch('/api/developers/webhooks')
+      .then(async (res) => {
+        if (res.status === 503) {
+          setWebhooksState({ status: 'unavailable' });
+          return null;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: { webhookEndpoints: WebhookEndpointMetadata[] } | null) => {
+        if (data === null) return; // already handled as 'unavailable' above
+        setWebhooksState({ status: 'ready', data: Array.isArray(data.webhookEndpoints) ? data.webhookEndpoints : [] });
+      })
+      .catch((err) => {
+        logger.error('Failed to load webhook endpoints', { err });
+        setWebhooksState({ status: 'error' });
+      });
+  }, [isAdmin]);
+
+  useEffect(() => {
+    fetchWebhooks();
+  }, [fetchWebhooks]);
 
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,6 +183,7 @@ export function useDeveloperSettings() {
     setDialogConfirm({
       title: 'Revogar Chave de API',
       message: `Tem certeza de que deseja revogar a chave "${name}"? Quaisquer aplicações ou SDKs que utilizem esta chave deixarão de funcionar imediatamente.`,
+      confirmLabel: 'Revogar',
       onConfirm: async () => {
         setDialogConfirm(null);
         setRevokingId(id);
@@ -139,6 +198,109 @@ export function useDeveloperSettings() {
           setRevokeError(err instanceof Error ? err.message : 'Não foi possível revogar a chave de API.');
         } finally {
           setRevokingId(null);
+        }
+      }
+    });
+  };
+
+  // events: free-text, comma/whitespace-separated (e.g. "agent.call.ended, lead.qualified" or
+  // "*" for all event types) — parsed client-side into the array createWebhookEndpointSchema
+  // expects. No curated event picker here: the platform does not expose a stable, versioned
+  // catalog of event types today (only `agent.call.ended` is actually dispatched in production —
+  // see telephonyService.ts), so presenting a dropdown of options would imply a completeness that
+  // does not exist (AGENTS.md §14).
+  function parseWebhookEvents(raw: string): string[] {
+    return Array.from(new Set(raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)));
+  }
+
+  const handleCreateWebhook = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = newWebhookUrl.trim();
+    const events = parseWebhookEvents(newWebhookEvents);
+    if (!url || events.length === 0) return;
+
+    setIsCreatingWebhook(true);
+    setCreateWebhookError(null);
+    try {
+      const res = await fetch('/api/developers/webhooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, events }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 503) {
+        throw new Error(data.error || 'Endpoints de webhook por tenant ainda não estão disponíveis nesta implantação.');
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // Shown once, in this response only — never fetchable again afterwards (AGENTS.md §13).
+      setCreatedWebhookSecretReveal({
+        id: data.webhookEndpoint.id,
+        url: data.webhookEndpoint.url,
+        secret: data.secret,
+      });
+      setNewWebhookUrl('');
+      setNewWebhookEvents('');
+      setShowCreateWebhookModal(false);
+      fetchWebhooks();
+    } catch (err) {
+      logger.error('Failed to create webhook endpoint', { err });
+      setCreateWebhookError(err instanceof Error ? err.message : 'Não foi possível criar o endpoint de webhook.');
+    } finally {
+      setIsCreatingWebhook(false);
+    }
+  };
+
+  const dismissCreatedWebhookSecretReveal = () => setCreatedWebhookSecretReveal(null);
+
+  const handleDeleteWebhook = (id: string, url: string) => {
+    setDialogConfirm({
+      title: 'Remover Endpoint de Webhook',
+      message: `Tem certeza de que deseja remover o endpoint "${url}"? Ele deixará de receber eventos imediatamente e esta ação não pode ser desfeita.`,
+      confirmLabel: 'Remover',
+      onConfirm: async () => {
+        setDialogConfirm(null);
+        setDeletingWebhookId(id);
+        setWebhookActionError(null);
+        try {
+          const res = await fetch(`/api/developers/webhooks/${id}`, { method: 'DELETE' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          fetchWebhooks();
+        } catch (err) {
+          logger.error('Failed to delete webhook endpoint', { err });
+          setWebhookActionError(err instanceof Error ? err.message : 'Não foi possível remover o endpoint de webhook.');
+        } finally {
+          setDeletingWebhookId(null);
+        }
+      }
+    });
+  };
+
+  const handleRegenerateWebhookSecret = (id: string, url: string) => {
+    setDialogConfirm({
+      title: 'Regenerar Segredo do Webhook',
+      message: `Regenerar o segredo de "${url}" invalida imediatamente o segredo atual — qualquer verificação de assinatura feita pelo seu servidor com o segredo anterior passará a falhar até você atualizá-lo. Deseja continuar?`,
+      confirmLabel: 'Regenerar',
+      onConfirm: async () => {
+        setDialogConfirm(null);
+        setRegeneratingWebhookId(id);
+        setWebhookActionError(null);
+        try {
+          const res = await fetch(`/api/developers/webhooks/${id}/regenerate-secret`, { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          setCreatedWebhookSecretReveal({
+            id: data.webhookEndpoint.id,
+            url: data.webhookEndpoint.url,
+            secret: data.secret,
+          });
+          fetchWebhooks();
+        } catch (err) {
+          logger.error('Failed to regenerate webhook secret', { err });
+          setWebhookActionError(err instanceof Error ? err.message : 'Não foi possível regenerar o segredo do webhook.');
+        } finally {
+          setRegeneratingWebhookId(null);
         }
       }
     });
@@ -168,15 +330,29 @@ export function useDeveloperSettings() {
     dismissCreatedKeyReveal,
     revokingId,
     revokeError,
-    testWebhookModal,
-    setTestWebhookModal,
-    webhookLog,
-    setWebhookLog,
     dialogConfirm,
     setDialogConfirm,
-    handleTestWebhook,
     handleCreateKey,
     handleRevokeKey,
     handleCopy,
+    webhooksState,
+    fetchWebhooks,
+    showCreateWebhookModal,
+    setShowCreateWebhookModal,
+    newWebhookUrl,
+    setNewWebhookUrl,
+    newWebhookEvents,
+    setNewWebhookEvents,
+    isCreatingWebhook,
+    createWebhookError,
+    setCreateWebhookError,
+    createdWebhookSecretReveal,
+    dismissCreatedWebhookSecretReveal,
+    deletingWebhookId,
+    regeneratingWebhookId,
+    webhookActionError,
+    handleCreateWebhook,
+    handleDeleteWebhook,
+    handleRegenerateWebhookSecret,
   };
 }

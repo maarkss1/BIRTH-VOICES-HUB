@@ -30,6 +30,7 @@ vi.mock('ioredis', () => ({
 
 vi.mock('../../../lib/env.js', () => ({
   getRedisUrl: () => 'redis://localhost:6379',
+  getRedisRetryStrategy: () => (times: number) => Math.min(times * 500, 10_000),
 }));
 
 import {
